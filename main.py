@@ -66,7 +66,7 @@ async def handle_media_stream(websocket: WebSocket):
     await websocket.accept()
 
     async with websockets.connect(
-        f"wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature={TEMPERATURE}&voice={VOICE}",
+        f"wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature={TEMPERATURE}",
         additional_headers={
             "Authorization": f"Bearer {OPENAI_API_KEY}"
         }
@@ -220,7 +220,8 @@ async def initialize_session(openai_ws):
                     "turn_detection": {"type": "server_vad"}
                 },
                 "output": {
-                    "format": {"type": "audio/pcmu"}
+                    "format": {"type": "audio/pcmu"},
+                    "voice": VOICE
                 }
             },
             "instructions": SYSTEM_MESSAGE,
