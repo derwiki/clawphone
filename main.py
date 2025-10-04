@@ -211,7 +211,7 @@ async def handle_media_stream(websocket: WebSocket):
         async def handle_silence_timeout():
             """Handle when the toddler has been silent for too long."""
             nonlocal silence_timeout_task, last_speech_stopped_timestamp
-            print("Silence timeout - toddler hasn't spoken for 10 seconds")
+            print("Silence timeout - toddler hasn't spoken for 15 seconds")
             
             # Send a conversation item to fill the silence
             silence_filler_item = {
@@ -242,7 +242,7 @@ async def handle_media_stream(websocket: WebSocket):
                 silence_timeout_task.cancel()
             
             async def timeout_wrapper():
-                await asyncio.sleep(10)  # Wait 10 seconds
+                await asyncio.sleep(15)  # Wait 15 seconds
                 # Check if we're still in silence (no new speech started)
                 if last_speech_stopped_timestamp is not None:
                     await handle_silence_timeout()
