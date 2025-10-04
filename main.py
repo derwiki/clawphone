@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import random
 import asyncio
 import websockets
 from fastapi import FastAPI, WebSocket, Request
@@ -11,20 +12,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GREETING = "Yeah, whadda ya want?"
+# We'll generate greetings dynamically with voice names
 
 # Configuration
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 PORT = int(os.getenv('PORT', 5050))
 TEMPERATURE = float(os.getenv('TEMPERATURE', 0.8))
-SYSTEM_MESSAGE = (
-    "You are an assistant for a 4 year old who accesses you by landline telephone. Don't say things like 'hi there little friend'. Don't talk down. Speak simply and clearly."
-    "IMPORTANT: Speak each word with a different voice tone and personality to create "
-    "a dynamic, engaging conversation experience. Vary your voice characteristics "
-    "between words - sometimes deeper, sometimes higher, sometimes more energetic, "
-    "sometimes more gentle. Make it sound like multiple personalities are taking "
-    "turns speaking each word!"
-)
+def create_system_message(voice_name):
+    return (
+        f"You are {voice_name}, an assistant for a 4 year old who accesses you by landline "
+        "telephone. Don't say things like 'hi there little friend'. Don't talk down. "
+        "Speak simply and clearly. When you first connect, wait 2 seconds before introducing yourself by saying "
+        f"'Hi, this is {voice_name}. How are you today?' and then wait for their response."
+    )
 VOICE = 'alloy'
 VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
 LOG_EVENT_TYPES = [
@@ -48,11 +48,15 @@ async def index_page():
 async def handle_incoming_call(request: Request):
     """Handle incoming call and return TwiML response to connect to Media Stream."""
     response = VoiceResponse()
-    # <Say> punctuation to improve text-to-speech flow
-    response.say(GREETING, voice="Google.en-US-Chirp3-HD-Aoede")
+
+    # Pick a random voice for this call
+    greeting_voice = random.choice(VOICES)
+
+    # Just connect to the media stream - let the AI do the greeting
     host = request.url.hostname
     connect = Connect()
-    connect.stream(url=f'wss://{host}/media-stream')
+    # Pass the chosen voice as a query parameter to the WebSocket
+    connect.stream(url=f'wss://{host}/media-stream?voice={greeting_voice}')
     response.append(connect)
     return HTMLResponse(content=str(response), media_type="application/xml")
 
@@ -62,13 +66,19 @@ async def handle_media_stream(websocket: WebSocket):
     print("Client connected")
     await websocket.accept()
 
+    # Extract the voice parameter from the query string
+    session_voice = random.choice(VOICES)  # Default fallback
+    if websocket.query_params.get("voice") and websocket.query_params["voice"] in VOICES:
+        session_voice = websocket.query_params["voice"]
+        print(f"Using voice from greeting: {session_voice}")
+
     async with websockets.connect(
         f"wss://api.openai.com/v1/realtime?model=gpt-realtime&temperature={TEMPERATURE}",
         additional_headers={
             "Authorization": f"Bearer {OPENAI_API_KEY}"
         }
     ) as openai_ws:
-        await initialize_session(openai_ws)
+        await initialize_session(openai_ws, session_voice)
 
         # Connection specific state
         stream_sid = None
@@ -194,7 +204,7 @@ async def send_initial_conversation_item(openai_ws):
             "content": [
                 {
                     "type": "input_text",
-                    "text": f"Greet the user with '{GREETING}'"
+                    "text": "Say hello and introduce yourself"
                 }
             ]
         }
@@ -203,8 +213,14 @@ async def send_initial_conversation_item(openai_ws):
     await openai_ws.send(json.dumps({"type": "response.create"}))
 
 
-async def initialize_session(openai_ws):
+async def initialize_session(openai_ws, voice=None):
     """Control initial session with OpenAI."""
+    if voice is None:
+        voice = random.choice(VOICES)
+
+    # Create personalized system message for this voice
+    system_message = create_system_message(voice)
+
     session_update = {
         "type": "session.update",
         "session": {
@@ -218,17 +234,20 @@ async def initialize_session(openai_ws):
                 },
                 "output": {
                     "format": {"type": "audio/pcmu"},
-                    "voice": VOICE
+                    "voice": voice
                 }
             },
-            "instructions": SYSTEM_MESSAGE,
+            "instructions": system_message,
         }
     }
     print('Sending session update:', json.dumps(session_update))
     await openai_ws.send(json.dumps(session_update))
 
-    # Uncomment the next line to have the AI speak first
-    # await send_initial_conversation_item(openai_ws)
+    # Wait for connection to be fully established before AI speaks
+    await asyncio.sleep(2)
+
+    # Have the AI speak first to introduce itself
+    await send_initial_conversation_item(openai_ws)
 
 if __name__ == "__main__":
     import uvicorn
