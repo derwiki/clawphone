@@ -26,7 +26,7 @@ def create_system_message(voice_name):
     return (
         f"{personality_prompt}\n\n"
         "When you first connect, wait 2 seconds before introducing yourself by saying "
-        f"'Hi, this is {personality['name']}. How are you today?' and then wait for their response."
+        f"'Hi Elodie, this is {personality['name']}.'"
     )
 VOICE = 'alloy'
 VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
