@@ -26,7 +26,10 @@ def create_system_message(voice_name):
     return (
         f"{personality_prompt}\n\n"
         "When you first connect, wait 2 seconds before introducing yourself by saying "
-        f"'Hi Elodie, this is {personality['name']}.'"
+        f"'Hi Elodie, this is {personality['name']}. {personality['personality'].split('.')[0]}.' "
+        "Then ask them a specific question like 'What did you do today? Did you play with any toys?' "
+        "Also mention that you have other 4-year-old friends (the other voice personalities) who might call her too. "
+        "Keep it brief and friendly, then wait for their response."
     )
 VOICE = 'alloy'
 VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']

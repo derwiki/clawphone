@@ -1,12 +1,14 @@
 [project]
-name = "speech-assistant-openai"
+name = "dial-aifriend"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI Voice Assistant for Toddlers - Phone conversations with personality-driven AI voices"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.9"
 dependencies = [
-    "flask>=3.1.2",
-    "openai>=2.1.0",
-    "requests>=2.32.5",
-    "twilio>=9.8.3",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "websockets>=12.0",
+    "openai>=1.0.0",
+    "twilio>=8.0.0",
+    "python-dotenv>=1.0.0",
 ]
