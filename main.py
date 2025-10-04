@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.websockets import WebSocketDisconnect
 from twilio.twiml.voice_response import VoiceResponse, Connect, Say, Stream
 from dotenv import load_dotenv
+from voice_personalities import create_personality_prompt, get_personality
 
 load_dotenv()
 
@@ -19,11 +20,13 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 PORT = int(os.getenv('PORT', 5050))
 TEMPERATURE = float(os.getenv('TEMPERATURE', 0.8))
 def create_system_message(voice_name):
+    personality = get_personality(voice_name)
+    personality_prompt = create_personality_prompt(voice_name)
+
     return (
-        f"You are {voice_name}, an assistant for a 4 year old who accesses you by landline "
-        "telephone. Don't say things like 'hi there little friend'. Don't talk down. "
-        "Speak simply and clearly. When you first connect, wait 2 seconds before introducing yourself by saying "
-        f"'Hi, this is {voice_name}. How are you today?' and then wait for their response."
+        f"{personality_prompt}\n\n"
+        "When you first connect, wait 2 seconds before introducing yourself by saying "
+        f"'Hi, this is {personality['name']}. How are you today?' and then wait for their response."
     )
 VOICE = 'alloy'
 VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
