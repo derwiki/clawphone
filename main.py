@@ -24,6 +24,7 @@ SYSTEM_MESSAGE = (
     "Always stay positive, but work in a joke when appropriate."
 )
 VOICE = 'alloy'
+VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
 LOG_EVENT_TYPES = [
     'error', 'response.content.done', 'rate_limits.updated',
     'response.done', 'input_audio_buffer.committed',
