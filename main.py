@@ -90,7 +90,7 @@ async def handle_media_stream(websocket: WebSocket):
         mark_queue = []
         response_start_timestamp_twilio = None
         silence_timeout_task = None
-        last_speech_stopped_time = None
+        last_speech_stopped_timestamp = None
         
         async def receive_from_twilio():
             """Receive audio data from Twilio and send it to the OpenAI Realtime API."""
@@ -121,7 +121,7 @@ async def handle_media_stream(websocket: WebSocket):
 
         async def send_to_twilio():
             """Receive events from the OpenAI Realtime API, send audio back to Twilio."""
-            nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio
+            nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio, silence_timeout_task
             try:
                 async for openai_message in openai_ws:
                     response = json.loads(openai_message)
@@ -129,6 +129,11 @@ async def handle_media_stream(websocket: WebSocket):
                         print(f"Received event: {response['type']}", response)
 
                     if response.get('type') == 'response.output_audio.delta' and 'delta' in response:
+                        # Cancel silence timeout when AI starts speaking
+                        if silence_timeout_task:
+                            silence_timeout_task.cancel()
+                            silence_timeout_task = None
+                        
                         audio_payload = base64.b64encode(base64.b64decode(response['delta'])).decode('utf-8')
                         audio_delta = {
                             "event": "media",
@@ -154,23 +159,29 @@ async def handle_media_stream(websocket: WebSocket):
                         if last_assistant_item:
                             print(f"Interrupting response with id: {last_assistant_item}")
                             await handle_speech_started_event()
-
+                    
                     elif response.get('type') == 'input_audio_buffer.speech_stopped':
                         print("Speech stopped detected - starting silence timeout")
+                        await start_silence_timeout()
+                    
+                    elif response.get('type') == 'response.done':
+                        print("AI finished speaking - restarting silence timeout")
+                        # AI finished speaking, restart the timeout to wait for toddler's response
                         await start_silence_timeout()
             except Exception as e:
                 print(f"Error in send_to_twilio: {e}")
 
         async def handle_speech_started_event():
             """Handle interruption when the caller's speech starts."""
-            nonlocal response_start_timestamp_twilio, last_assistant_item, silence_timeout_task
+            nonlocal response_start_timestamp_twilio, last_assistant_item, silence_timeout_task, last_speech_stopped_timestamp
             print("Handling speech started event.")
-
-            # Cancel any pending silence timeout
+            
+            # Cancel any pending silence timeout and clear the timestamp
             if silence_timeout_task:
                 silence_timeout_task.cancel()
                 silence_timeout_task = None
-
+            last_speech_stopped_timestamp = None
+            
             if mark_queue and response_start_timestamp_twilio is not None:
                 elapsed_time = latest_media_timestamp - response_start_timestamp_twilio
                 if SHOW_TIMING_MATH:
@@ -199,9 +210,9 @@ async def handle_media_stream(websocket: WebSocket):
 
         async def handle_silence_timeout():
             """Handle when the toddler has been silent for too long."""
-            nonlocal silence_timeout_task
+            nonlocal silence_timeout_task, last_speech_stopped_timestamp
             print("Silence timeout - toddler hasn't spoken for 10 seconds")
-
+            
             # Send a conversation item to fill the silence
             silence_filler_item = {
                 "type": "conversation.item.create",
@@ -218,23 +229,24 @@ async def handle_media_stream(websocket: WebSocket):
             }
             await openai_ws.send(json.dumps(silence_filler_item))
             await openai_ws.send(json.dumps({"type": "response.create"}))
-
+            
+            # Clear the timeout task but keep the timestamp - we'll restart timeout after AI finishes speaking
             silence_timeout_task = None
 
         async def start_silence_timeout():
             """Start a 10-second timeout for silence detection."""
-            nonlocal silence_timeout_task, last_speech_stopped_time
-            last_speech_stopped_time = latest_media_timestamp
-
+            nonlocal silence_timeout_task, last_speech_stopped_timestamp
+            last_speech_stopped_timestamp = latest_media_timestamp
+            
             if silence_timeout_task:
                 silence_timeout_task.cancel()
-
+            
             async def timeout_wrapper():
                 await asyncio.sleep(10)  # Wait 10 seconds
                 # Check if we're still in silence (no new speech started)
-                if last_speech_stopped_time == latest_media_timestamp:
+                if last_speech_stopped_timestamp is not None:
                     await handle_silence_timeout()
-
+            
             silence_timeout_task = asyncio.create_task(timeout_wrapper())
 
         async def send_mark(connection, stream_sid):
