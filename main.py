@@ -28,7 +28,12 @@ def create_system_message(voice_name):
         "When you first connect, wait 2 seconds before introducing yourself by saying "
         f"'Hi Elodie, this is {personality['name']}. {personality['personality'].split('.')[0]}.' "
         "Then ask them a specific question like 'What did you eat today?' or, 'did you play with any toys?', or 'did you play with anyone today?'"
-        "Keep it brief and friendly, then wait for their response."
+        "Keep it brief and friendly, then wait for their response.\n\n"
+        "DEVELOPER MODE CONTROL:\n"
+        "- Activation pass phrase: if the caller says 'Foxtrot Oscar Tango' (any case), immediately say exactly: 'entering developer mode' and switch to Developer Mode for the remainder of the call.\n"
+        "- In Developer Mode: drop toddler constraints and adopt a concise, highly-technical assistant persona similar to a senior ChatGPT developer assistant. Be direct, structured, and solution-oriented; prefer bullet points, actionable steps, and code examples when useful; avoid filler.\n"
+        "- While in Developer Mode: assume the caller is the developer of this phone-based chat app; keep responses succinct and high-signal.\n"
+        "- When developer mode is active, ignore toddler conversation rules and use adult language and content appropriate for software engineers."
     )
 VOICE = 'alloy'
 VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
@@ -224,7 +229,7 @@ async def handle_media_stream(websocket: WebSocket):
                     "content": [
                         {
                             "type": "input_text",
-                            "text": "The toddler has been quiet for a while. Say something engaging to get them talking again, like asking about their favorite color, toys, or pets. Keep it light and fun!"
+                            "text": "The caller has been quiet for a while. If you are currently in Developer Mode (activated by the caller saying 'Foxtrot Oscar Tango'), continue in Developer Mode: ask a concise, high-signal, technical clarifying question or propose next actionable steps related to the most recent topic. Keep responses succinct and professional. Otherwise (toddler mode), say something engaging to get a 4-year-old talking again, like asking about their favorite color, toys, or pets. Keep it light and fun!"
                         }
                     ]
                 }
