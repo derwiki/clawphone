@@ -98,6 +98,8 @@ async def handle_media_stream(websocket: WebSocket):
         response_start_timestamp_twilio = None
         silence_timeout_task = None
         last_speech_stopped_timestamp = None
+        assistant_text_buffer = ""
+        user_transcript_buffer = ""
         
         async def receive_from_twilio():
             """Receive audio data from Twilio and send it to the OpenAI Realtime API."""
@@ -128,12 +130,35 @@ async def handle_media_stream(websocket: WebSocket):
 
         async def send_to_twilio():
             """Receive events from the OpenAI Realtime API, send audio back to Twilio."""
-            nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio, silence_timeout_task
+            nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio, silence_timeout_task, assistant_text_buffer, user_transcript_buffer
             try:
                 async for openai_message in openai_ws:
                     response = json.loads(openai_message)
                     if response['type'] in LOG_EVENT_TYPES:
                         print(f"Received event: {response['type']}", response)
+
+                    # Accumulate assistant text output
+                    if response.get('type') == 'response.output_text.delta' and 'delta' in response:
+                        assistant_text_buffer += response['delta']
+
+                    if response.get('type') == 'response.output_text.done':
+                        if assistant_text_buffer.strip():
+                            print(f"Assistant: {assistant_text_buffer.strip()}")
+                        assistant_text_buffer = ""
+
+                    # Fallback: if response finishes without explicit output_text.done
+                    if response.get('type') == 'response.done' and assistant_text_buffer.strip():
+                        print(f"Assistant: {assistant_text_buffer.strip()}")
+                        assistant_text_buffer = ""
+
+                    # Accumulate caller transcription
+                    if response.get('type') == 'input_audio_buffer.transcription.delta' and 'delta' in response:
+                        user_transcript_buffer += response['delta']
+
+                    if response.get('type') in ('input_audio_buffer.transcription.done', 'input_audio_buffer.transcription.completed'):
+                        if user_transcript_buffer.strip():
+                            print(f"Caller: {user_transcript_buffer.strip()}")
+                        user_transcript_buffer = ""
 
                     if response.get('type') == 'response.output_audio.delta' and 'delta' in response:
                         # Cancel silence timeout when AI starts speaking
@@ -300,11 +325,12 @@ async def initialize_session(openai_ws, voice=None):
         "session": {
             "type": "realtime",
             "model": "gpt-realtime",
-            "output_modalities": ["audio"],
+            "output_modalities": ["audio", "text"],
             "audio": {
                 "input": {
                     "format": {"type": "audio/pcmu"},
-                    "turn_detection": {"type": "server_vad"}
+                    "turn_detection": {"type": "server_vad"},
+                    "transcription": {"enabled": True}
                 },
                 "output": {
                     "format": {"type": "audio/pcmu"},
