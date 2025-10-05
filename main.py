@@ -27,8 +27,7 @@ def create_system_message(voice_name):
         f"{personality_prompt}\n\n"
         "When you first connect, wait 2 seconds before introducing yourself by saying "
         f"'Hi Elodie, this is {personality['name']}. {personality['personality'].split('.')[0]}.' "
-        "Then ask them a specific question like 'What did you do today? Did you play with any toys?' "
-        "Also mention that you have other 4-year-old friends (the other voice personalities) who might call her too. "
+        "Then ask them a specific question like 'What did you eat today?' or, 'did you play with any toys?', or 'did you play with anyone today?'"
         "Keep it brief and friendly, then wait for their response."
     )
 VOICE = 'alloy'
