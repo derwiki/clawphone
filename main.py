@@ -54,10 +54,25 @@ if not OPENAI_API_KEY:
 async def index_page():
     return {"message": "Twilio Media Stream Server is running!"}
 
+ALLOWED_PHONE_NUMBERS = [
+    "+15555551212",  # 555-555-1212
+]
+
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def handle_incoming_call(request: Request):
     """Handle incoming call and return TwiML response to connect to Media Stream."""
     response = VoiceResponse()
+
+    # Get caller's phone number from Twilio request
+    form_data = await request.form()
+    caller_number = form_data.get('From', '')
+
+    # Restrict to allowed phone numbers only
+    if caller_number not in ALLOWED_PHONE_NUMBERS:
+        print(f"Rejecting call from unauthorized number: {caller_number}")
+        response.say("Sorry, this service is not available for your number. Goodbye.")
+        response.hangup()
+        return HTMLResponse(content=str(response), media_type="application/xml")
 
     # Pick a random voice for this call
     greeting_voice = random.choice(VOICES)
