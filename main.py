@@ -26,6 +26,16 @@ SYSTEM_MESSAGE = (
 
 VOICE = 'alloy'
 VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
+
+RESTART_CODE_WORD = "deploy yourself"
+RESTART_PENDING = False
+
+
+def _matches_restart_code_word(text: str) -> bool:
+    if not text:
+        return False
+    normalized = "".join(c.lower() if c.isalnum() or c.isspace() else " " for c in text)
+    return RESTART_CODE_WORD in " ".join(normalized.split())
 LOG_EVENT_TYPES = [
     'error', 'response.content.done', 'rate_limits.updated',
     'response.done', 'input_audio_buffer.committed',
@@ -162,6 +172,11 @@ async def handle_media_stream(websocket: WebSocket):
                     if response.get('type') in ('input_audio_buffer.transcription.done', 'input_audio_buffer.transcription.completed'):
                         if user_transcript_buffer.strip():
                             print(f"Caller: {user_transcript_buffer.strip()}")
+                        if _matches_restart_code_word(user_transcript_buffer):
+                            global RESTART_PENDING
+                            RESTART_PENDING = True
+                            print("Restart code word detected; announcing shutdown")
+                            await trigger_restart_announcement(openai_ws)
                         user_transcript_buffer = ""
 
                     if response.get('type') == 'response.output_audio.delta' and 'delta' in response:
@@ -201,6 +216,12 @@ async def handle_media_stream(websocket: WebSocket):
                         await start_silence_timeout()
                     
                     elif response.get('type') == 'response.done':
+                        if RESTART_PENDING:
+                            # Let the "system restarting" audio drain to Twilio, then drop the call
+                            await asyncio.sleep(2)
+                            await openai_ws.close()
+                            await websocket.close()
+                            return
                         print("AI finished speaking - restarting silence timeout")
                         # AI finished speaking, restart the timeout to wait for caller's response
                         await start_silence_timeout()
@@ -296,6 +317,28 @@ async def handle_media_stream(websocket: WebSocket):
                 mark_queue.append('responsePart')
 
         await asyncio.gather(receive_from_twilio(), send_to_twilio())
+
+    if RESTART_PENDING:
+        print("Restart pending; exiting process for supervisor restart")
+        os._exit(0)
+
+async def trigger_restart_announcement(openai_ws):
+    """Have the model say 'system restarting' so the caller hears it before we exit."""
+    item = {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "Reply with exactly: 'System restarting.' Do not say anything else.",
+                }
+            ],
+        },
+    }
+    await openai_ws.send(json.dumps(item))
+    await openai_ws.send(json.dumps({"type": "response.create"}))
 
 async def send_initial_conversation_item(openai_ws):
     """Send initial conversation item if AI talks first."""
