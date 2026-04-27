@@ -9,32 +9,21 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.websockets import WebSocketDisconnect
 from twilio.twiml.voice_response import VoiceResponse, Connect, Say, Stream
 from dotenv import load_dotenv
-from voice_personalities import create_personality_prompt, get_personality
 
 load_dotenv()
-
-# We'll generate greetings dynamically with voice names
 
 # Configuration
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 PORT = int(os.getenv('PORT', 5050))
 TEMPERATURE = float(os.getenv('TEMPERATURE', 0.8))
-def create_system_message(voice_name):
-    personality = get_personality(voice_name)
-    personality_prompt = create_personality_prompt(voice_name)
 
-    return (
-        f"{personality_prompt}\n\n"
-        "When you first connect, wait 2 seconds before introducing yourself by saying "
-        f"'Hi Elodie, this is {personality['name']}. {personality['personality'].split('.')[0]}.' "
-        "Then ask them a specific question like 'What did you eat today?' or, 'did you play with any toys?', or 'did you play with anyone today?'"
-        "Keep it brief and friendly, then wait for their response.\n\n"
-        "DEVELOPER MODE CONTROL:\n"
-        "- Activation pass phrase: if the caller says 'Foxtrot Oscar Tango' (any case), immediately say exactly: 'entering developer mode' and switch to Developer Mode for the remainder of the call.\n"
-        "- In Developer Mode: drop toddler constraints and adopt a concise, highly-technical assistant persona similar to a senior ChatGPT developer assistant. Be direct, structured, and solution-oriented; prefer bullet points, actionable steps, and code examples when useful; avoid filler.\n"
-        "- While in Developer Mode: assume the caller is the developer of this phone-based chat app; keep responses succinct and high-signal.\n"
-        "- When developer mode is active, ignore toddler conversation rules and use adult language and content appropriate for software engineers."
-    )
+SYSTEM_MESSAGE = (
+    "You are a concise, highly-technical voice assistant similar to a senior developer assistant. "
+    "Be direct, structured, and solution-oriented. Prefer bullet points, actionable steps, and code examples when useful. Avoid filler.\n"
+    "Keep responses succinct and high-signal.\n"
+    "When you first connect, briefly greet the caller and ask what they're working on."
+)
+
 VOICE = 'alloy'
 VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
 LOG_EVENT_TYPES = [
@@ -213,7 +202,7 @@ async def handle_media_stream(websocket: WebSocket):
                     
                     elif response.get('type') == 'response.done':
                         print("AI finished speaking - restarting silence timeout")
-                        # AI finished speaking, restart the timeout to wait for toddler's response
+                        # AI finished speaking, restart the timeout to wait for caller's response
                         await start_silence_timeout()
             except Exception as e:
                 print(f"Error in send_to_twilio: {e}")
@@ -256,10 +245,10 @@ async def handle_media_stream(websocket: WebSocket):
                 response_start_timestamp_twilio = None
 
         async def handle_silence_timeout():
-            """Handle when the toddler has been silent for too long."""
+            """Handle when the caller has been silent for too long."""
             nonlocal silence_timeout_task, last_speech_stopped_timestamp
-            print("Silence timeout - toddler hasn't spoken for 15 seconds")
-            
+            print("Silence timeout - caller hasn't spoken for 15 seconds")
+
             # Send a conversation item to fill the silence
             silence_filler_item = {
                 "type": "conversation.item.create",
@@ -269,7 +258,7 @@ async def handle_media_stream(websocket: WebSocket):
                     "content": [
                         {
                             "type": "input_text",
-                            "text": "The caller has been quiet for a while. If you are currently in Developer Mode (activated by the caller saying 'Foxtrot Oscar Tango'), continue in Developer Mode: ask a concise, high-signal, technical clarifying question or propose next actionable steps related to the most recent topic. Keep responses succinct and professional. Otherwise (toddler mode), say something engaging to get a 4-year-old talking again, like asking about their favorite color, toys, or pets. Keep it light and fun!"
+                            "text": "The caller has been quiet for a while. Ask a concise, high-signal clarifying question or propose next actionable steps related to the most recent topic. Keep it succinct and professional."
                         }
                     ]
                 }
@@ -332,9 +321,6 @@ async def initialize_session(openai_ws, voice=None):
     if voice is None:
         voice = random.choice(VOICES)
 
-    # Create personalized system message for this voice
-    system_message = create_system_message(voice)
-
     session_update = {
         "type": "session.update",
         "session": {
@@ -352,7 +338,7 @@ async def initialize_session(openai_ws, voice=None):
                     "voice": voice
                 }
             },
-            "instructions": system_message,
+            "instructions": SYSTEM_MESSAGE,
         }
     }
     print('Sending session update:', json.dumps(session_update))
