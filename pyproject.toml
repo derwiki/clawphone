@@ -1,7 +1,7 @@
 [project]
 name = "dial-aifriend"
 version = "0.1.0"
-description = "AI Voice Assistant for Toddlers - Phone conversations with personality-driven AI voices"
+description = "AI Voice Assistant - Phone-based technical assistant powered by OpenAI Realtime API and Twilio"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [

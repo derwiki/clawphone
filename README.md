@@ -1,35 +1,27 @@
-# DialAiFriend - AI Voice Assistant for Toddlers
+# DialAiFriend - AI Voice Assistant
 
-A toddler-focused AI voice assistant that provides engaging phone conversations with multiple personality-driven AI voices. Built with Twilio Voice, OpenAI Realtime API, and Python.
+A phone-based AI voice assistant that provides concise, technical conversations over a phone call. Built with Twilio Voice, OpenAI Realtime API, and Python.
 
 **Based on the original project:** [Speech Assistant with Twilio Voice and the OpenAI Realtime API](https://github.com/twilio-labs/speech-assistant-openai-realtime-api-python) by Twilio Labs.
 
 ## Features
 
-🎭 **10 Unique AI Personalities** - Each voice has distinct characteristics, interests, and relationships with other voices
-- Alloy (calm and steady), Ash (creative and artistic), Ballad (musical and rhythmic)
-- Coral (bubbly and energetic), Echo (helpful and organized), Sage (wise and gentle)
-- Shimmer (sweet and caring), Verse (poetic and thoughtful), Marin (adventurous), Cedar (strong and protective)
+**Agent Mode** - A concise, highly-technical voice assistant that's direct, structured, and solution-oriented
 
-🗣️ **Toddler-Optimized Conversations**
-- Asks specific, simple questions that 4-year-olds can easily answer
-- Shares things about itself to create natural, two-way conversations
-- Automatically switches topics when kids say "I dunno" or seem confused
-- Keeps conversations broad and varied (no deep dives into single topics)
-
-⏰ **Smart Silence Detection**
-- Automatically detects when toddlers go quiet for 15 seconds
-- Jumps in with engaging questions to keep the conversation flowing
+**Smart Silence Detection**
+- Detects when the caller goes quiet for 15 seconds
+- Follows up with clarifying questions or proposes next steps
 - Won't interrupt itself when speaking
 
-📞 **Phone-Based Interaction**
+**Phone-Based Interaction**
 - Simple phone call interface - no apps or screens needed
 - Real-time voice conversations with low latency
 - Works with any phone number through Twilio
+- Randomly selects from 10 available OpenAI voices per call
 
 ## How It Works
 
-This application demonstrates how to use Python, [Twilio Voice](https://www.twilio.com/docs/voice) and [Media Streams](https://www.twilio.com/docs/voice/media-streams), and [OpenAI's Realtime API](https://platform.openai.com/docs/) to create an AI voice assistant specifically designed for toddlers.
+This application uses Python, [Twilio Voice](https://www.twilio.com/docs/voice) and [Media Streams](https://www.twilio.com/docs/voice/media-streams), and [OpenAI's Realtime API](https://platform.openai.com/docs/) to create an AI voice assistant accessible via phone call.
 
 The application opens websockets with the OpenAI Realtime API and Twilio, and sends voice audio from one to the other to enable a two-way conversation.
 
@@ -122,20 +114,13 @@ Or use the included server script:
 ```
 
 ## Test the app
-With the development server running, call the phone number you purchased in the **Prerequisites**. After the AI personality introduces itself, you should be able to have a natural conversation with the AI Assistant. Each call will randomly select one of the 10 personality voices to chat with your toddler!
+With the development server running, call the phone number you purchased in the **Prerequisites**. The assistant will greet you and ask what you're working on.
 
 ## Special Features
 
-### Toddler-Optimized Conversation Flow
-The AI personalities are specifically designed for 4-year-olds:
-- Start with specific questions like "What did you do today? Did you play with any toys?"
-- Share things about themselves to create natural conversations
-- Switch topics quickly when kids seem confused or say "I dunno"
-- Use simple, concrete language and give examples
-
 ### Smart Silence Detection
-- Automatically detects when toddlers go quiet for 15 seconds
-- Jumps in with engaging questions to keep conversations flowing
+- Detects when the caller goes quiet for 15 seconds
+- Follows up with concise clarifying questions or proposes next actionable steps
 - Won't interrupt itself when speaking
 - Continuously monitors throughout the entire conversation
 
