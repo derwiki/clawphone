@@ -541,7 +541,7 @@ async def send_initial_conversation_item(openai_ws):
             "content": [
                 {
                     "type": "input_text",
-                    "text": "Say hello and introduce yourself"
+                    "text": "Say exactly: 'I'm ready.' Nothing else."
                 }
             ]
         }
