@@ -32,8 +32,14 @@ Claude on its own.
 
 A real call log from today: *"Ask Claude, how many emails have I exchanged with
 Landon in the last six months?"* came back with *"47 messages with
-landon@kbadvisors.com since November 26, 2025."* That's the shape of query
+landon@gmail.com since November 26, 2025."* That's the shape of query
 this excels at.
+
+
+
+https://github.com/user-attachments/assets/3394c5e3-3946-4ea4-a35d-320346b4057f
+
+
 
 ## Architecture
 
