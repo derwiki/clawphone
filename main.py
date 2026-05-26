@@ -316,8 +316,6 @@ async def handle_media_stream(websocket: WebSocket):
         last_assistant_item = None
         mark_queue = []
         response_start_timestamp_twilio = None
-        silence_timeout_task = None
-        last_speech_stopped_timestamp = None
         assistant_text_buffer = ""
         user_transcript_buffer = ""
         
@@ -350,7 +348,7 @@ async def handle_media_stream(websocket: WebSocket):
 
         async def send_to_twilio():
             """Receive events from the OpenAI Realtime API, send audio back to Twilio."""
-            nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio, silence_timeout_task, assistant_text_buffer, user_transcript_buffer
+            nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio, assistant_text_buffer, user_transcript_buffer
             try:
                 async for openai_message in openai_ws:
                     response = json.loads(openai_message)
@@ -388,11 +386,6 @@ async def handle_media_stream(websocket: WebSocket):
                         user_transcript_buffer = ""
 
                     if response.get('type') == 'response.output_audio.delta' and 'delta' in response:
-                        # Cancel silence timeout when AI starts speaking
-                        if silence_timeout_task:
-                            silence_timeout_task.cancel()
-                            silence_timeout_task = None
-                        
                         audio_payload = base64.b64encode(base64.b64decode(response['delta'])).decode('utf-8')
                         audio_delta = {
                             "event": "media",
@@ -419,10 +412,6 @@ async def handle_media_stream(websocket: WebSocket):
                             print(f"Interrupting response with id: {last_assistant_item}")
                             await handle_speech_started_event()
                     
-                    elif response.get('type') == 'input_audio_buffer.speech_stopped':
-                        print("Speech stopped detected - starting silence timeout")
-                        await start_silence_timeout()
-                    
                     elif response.get('type') == 'response.done':
                         if RESTART_PENDING:
                             # Let the "system restarting" audio drain to Twilio, then drop the call
@@ -436,24 +425,14 @@ async def handle_media_stream(websocket: WebSocket):
                             # The model invoked a tool; run it and let the follow-up response speak the answer.
                             for call in function_calls:
                                 asyncio.create_task(handle_function_call(call))
-                        else:
-                            print("AI finished speaking - restarting silence timeout")
-                            # AI finished speaking, restart the timeout to wait for caller's response
-                            await start_silence_timeout()
             except Exception as e:
                 print(f"Error in send_to_twilio: {e}")
 
         async def handle_speech_started_event():
             """Handle interruption when the caller's speech starts."""
-            nonlocal response_start_timestamp_twilio, last_assistant_item, silence_timeout_task, last_speech_stopped_timestamp
+            nonlocal response_start_timestamp_twilio, last_assistant_item
             print("Handling speech started event.")
-            
-            # Cancel any pending silence timeout and clear the timestamp
-            if silence_timeout_task:
-                silence_timeout_task.cancel()
-                silence_timeout_task = None
-            last_speech_stopped_timestamp = None
-            
+
             if mark_queue and response_start_timestamp_twilio is not None:
                 elapsed_time = latest_media_timestamp - response_start_timestamp_twilio
                 if SHOW_TIMING_MATH:
@@ -479,47 +458,6 @@ async def handle_media_stream(websocket: WebSocket):
                 mark_queue.clear()
                 last_assistant_item = None
                 response_start_timestamp_twilio = None
-
-        async def handle_silence_timeout():
-            """Handle when the caller has been silent for too long."""
-            nonlocal silence_timeout_task, last_speech_stopped_timestamp
-            print("Silence timeout - caller hasn't spoken for 15 seconds")
-
-            # Send a conversation item to fill the silence
-            silence_filler_item = {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "The caller has been quiet for a while. Ask a concise, high-signal clarifying question or propose next actionable steps related to the most recent topic. Keep it succinct and professional."
-                        }
-                    ]
-                }
-            }
-            await openai_ws.send(json.dumps(silence_filler_item))
-            await openai_ws.send(json.dumps({"type": "response.create"}))
-            
-            # Clear the timeout task but keep the timestamp - we'll restart timeout after AI finishes speaking
-            silence_timeout_task = None
-
-        async def start_silence_timeout():
-            """Start a 10-second timeout for silence detection."""
-            nonlocal silence_timeout_task, last_speech_stopped_timestamp
-            last_speech_stopped_timestamp = latest_media_timestamp
-            
-            if silence_timeout_task:
-                silence_timeout_task.cancel()
-            
-            async def timeout_wrapper():
-                await asyncio.sleep(15)  # Wait 15 seconds
-                # Check if we're still in silence (no new speech started)
-                if last_speech_stopped_timestamp is not None:
-                    await handle_silence_timeout()
-            
-            silence_timeout_task = asyncio.create_task(timeout_wrapper())
 
         async def handle_function_call(call):
             """Execute a tool call from the Realtime model and feed the result back."""
