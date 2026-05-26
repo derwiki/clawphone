@@ -5,7 +5,9 @@ import base64
 import random
 import asyncio
 import shutil
-from typing import Awaitable, Callable, Optional
+from contextlib import asynccontextmanager
+from typing import Any, Awaitable, Callable, Optional
+import anthropic
 import websockets
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -39,8 +41,10 @@ SYSTEM_MESSAGE = (
 )
 
 CLAUDE_SESSION_FILE = "/tmp/dialaifriend-claude-session-id"
+CLAUDE_PID_FILE = "/tmp/dialaifriend-claude.pid"
 CLAUDE_CWD = "/srv/dialaifriend"
 CLAUDE_TIMEOUT_SECONDS = 90
+CLAUDE_STARTUP_PROBE_SECONDS = 0.5
 CLAUDE_BIN = os.getenv("CLAUDE_BIN") or shutil.which("claude") or "claude"
 print(f"[claude] resolved CLAUDE_BIN={CLAUDE_BIN}")
 
@@ -150,9 +154,19 @@ def _log_claude_event(event: dict) -> None:
         print(f"[claude:event] {et}")
 
 
-def _progress_phrase_for_tool(name: str) -> str | None:
-    """Map a claude tool name to a short status phrase to speak to the caller,
-    or None if this tool shouldn't be narrated (internal/meta tools)."""
+_anthropic_client: anthropic.AsyncAnthropic | None = None
+
+
+def _get_anthropic_client() -> anthropic.AsyncAnthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.AsyncAnthropic()
+    return _anthropic_client
+
+
+def _static_phrase_for_tool(name: str) -> str | None:
+    """Fallback phrase if the Haiku summarizer fails. None for tools we
+    don't want to narrate at all (internal/meta tools)."""
     n = name.lower()
     if "toolsearch" in n.replace("_", ""):
         return None
@@ -173,37 +187,117 @@ def _progress_phrase_for_tool(name: str) -> str | None:
     return None
 
 
-async def _stream_claude(
-    query: str,
-    session_id: str | None,
-    on_tool_use: Optional[Callable[[str], Awaitable[None]]] = None,
-) -> dict:
-    """Run claude -p in stream-json mode, log each event, return the final result event."""
-    cmd = [
-        CLAUDE_BIN, "-p",
-        "--output-format", "stream-json",
-        "--verbose",
-        "--permission-mode", "bypassPermissions",
-    ]
-    if session_id:
-        cmd += ["--resume", session_id]
-    cmd.append(query)
-    print(f"[claude] invoking: {cmd}")
+_PROGRESS_SYSTEM_PROMPT = (
+    "You translate a single tool call into a brief, casual spoken status "
+    "update to play to a phone caller waiting for an answer. "
+    "Rules: under 10 words, present tense, first person, one sentence, "
+    "ends with a period, no preamble, no quotes, no labels. Be specific "
+    "when the input gives you something concrete (a sender name, a date, "
+    "a subject). Examples: 'Checking your calendar for tomorrow.' "
+    "'Searching for emails from Roger.' 'Reading that message about the offer.'"
+)
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=CLAUDE_CWD,
-    )
 
-    final_event: dict | None = None
+async def _summarize_tool_use_for_speech(tool_name: str, tool_input: Any) -> str | None:
+    """Ask Haiku for a contextual one-liner describing this tool call.
+    Returns None on any failure — caller falls back to the static phrase."""
+    if _static_phrase_for_tool(tool_name) is None:
+        return None
+    try:
+        payload = json.dumps(
+            {"tool": tool_name, "input": tool_input},
+            separators=(",", ":"),
+            default=str,
+        )[:1500]
+        client = _get_anthropic_client()
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=40,
+                system=_PROGRESS_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": payload}],
+            ),
+            timeout=4.0,
+        )
+        text = next(
+            (b.text for b in response.content if b.type == "text"), ""
+        ).strip().strip('"').strip()
+        return text[:120] if text else None
+    except Exception as e:
+        print(f"[progress] haiku summary failed for {tool_name}: {e}")
+        return None
 
-    async def read_stdout() -> None:
-        nonlocal final_event
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
+
+class ClaudeSession:
+    """One long-lived `claude --print --input-format stream-json` subprocess.
+    Queries are serialized through a lock; each query writes a user message
+    to stdin and consumes events from a per-query queue until the next
+    `result` event."""
+
+    def __init__(self) -> None:
+        self.proc: asyncio.subprocess.Process | None = None
+        self.session_id: str | None = _load_claude_session_id()
+        self.lock = asyncio.Lock()
+        self._event_queue: asyncio.Queue[dict | None] | None = None
+        self._stdout_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+
+    def _is_alive(self) -> bool:
+        return self.proc is not None and self.proc.returncode is None
+
+    async def start(self) -> None:
+        """Spawn the persistent subprocess. If --resume fails fast, retry fresh."""
+        attempts = [True, False] if self.session_id else [False]
+        last_err: str | None = None
+        for use_resume in attempts:
+            cmd = [
+                CLAUDE_BIN, "-p",
+                "--input-format", "stream-json",
+                "--output-format", "stream-json",
+                "--verbose",
+                "--permission-mode", "bypassPermissions",
+            ]
+            if use_resume and self.session_id:
+                cmd += ["--resume", self.session_id]
+            print(f"[claude] spawning persistent session: {cmd}")
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=CLAUDE_CWD,
+            )
+            # Brief probe: if claude bails immediately (e.g. bad --resume id),
+            # returncode will be set within a moment.
+            await asyncio.sleep(CLAUDE_STARTUP_PROBE_SECONDS)
+            if proc.returncode is not None:
+                err = b""
+                try:
+                    err = await asyncio.wait_for(proc.stderr.read(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    pass
+                last_err = err.decode(errors="replace")[:400]
+                print(f"[claude] startup exited rc={proc.returncode} stderr={last_err}")
+                if use_resume:
+                    print("[claude] dropping stored session id and retrying fresh")
+                    self.session_id = None
+                continue
+            self.proc = proc
+            try:
+                with open(CLAUDE_PID_FILE, "w") as f:
+                    f.write(str(proc.pid))
+            except OSError as e:
+                print(f"[claude] could not write pid file: {e}")
+            print(f"[claude] persistent session pid={proc.pid}")
+            self._event_queue = None
+            self._stdout_task = asyncio.create_task(self._read_stdout())
+            self._stderr_task = asyncio.create_task(self._read_stderr())
+            return
+        raise RuntimeError(f"Could not start persistent Claude session: {last_err}")
+
+    async def _read_stdout(self) -> None:
+        assert self.proc is not None and self.proc.stdout is not None
+        async for raw in self.proc.stdout:
             line = raw.strip()
             if not line:
                 continue
@@ -213,65 +307,118 @@ async def _stream_claude(
                 print(f"[claude:stdout-raw] {line[:300].decode(errors='replace')}")
                 continue
             _log_claude_event(event)
-            if on_tool_use is not None and event.get("type") == "assistant":
-                msg = event.get("message", {}) or {}
-                for block in msg.get("content") or []:
-                    if block.get("type") == "tool_use":
-                        try:
-                            await on_tool_use(block.get("name", ""))
-                        except Exception as e:
-                            print(f"[claude] on_tool_use failed: {e}")
-            if event.get("type") == "result":
-                final_event = event
+            sid = event.get("session_id")
+            if sid and sid != self.session_id:
+                self.session_id = sid
+                _save_claude_session_id(sid)
+            q = self._event_queue
+            if q is not None:
+                await q.put(event)
+        print(f"[claude] stdout EOF; subprocess rc={self.proc.returncode}")
+        q = self._event_queue
+        if q is not None:
+            await q.put(None)
 
-    async def read_stderr() -> None:
-        assert proc.stderr is not None
-        async for raw in proc.stderr:
+    async def _read_stderr(self) -> None:
+        assert self.proc is not None and self.proc.stderr is not None
+        async for raw in self.proc.stderr:
             text = raw.rstrip().decode(errors="replace")
             if text:
                 print(f"[claude:stderr] {text[:400]}")
 
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(read_stdout(), read_stderr(), proc.wait()),
-            timeout=CLAUDE_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        print(f"[claude] TIMEOUT after {CLAUDE_TIMEOUT_SECONDS}s")
-        return {"is_error": True, "result": "The lookup timed out.", "session_id": session_id}
+    async def _kill(self) -> None:
+        if self.proc is not None and self.proc.returncode is None:
+            try:
+                self.proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(self.proc.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
+        for task in (self._stdout_task, self._stderr_task):
+            if task is not None and not task.done():
+                task.cancel()
+        self._stdout_task = None
+        self._stderr_task = None
 
-    print(f"[claude] returncode={proc.returncode}")
+    async def _ensure_alive(self) -> None:
+        if not self._is_alive():
+            print("[claude] subprocess gone; respawning")
+            await self._kill()
+            await self.start()
 
-    if final_event is None:
-        return {
-            "is_error": True,
-            "result": f"No result event from claude (rc={proc.returncode})",
-            "session_id": session_id,
-        }
-    return final_event
+    async def query(
+        self,
+        prompt: str,
+        on_tool_use: Optional[Callable[[str, Any], Awaitable[None]]] = None,
+    ) -> dict:
+        async with self.lock:
+            await self._ensure_alive()
+            assert self.proc is not None and self.proc.stdin is not None
+            queue: asyncio.Queue[dict | None] = asyncio.Queue()
+            self._event_queue = queue
+            user_msg = {
+                "type": "user",
+                "message": {"role": "user", "content": prompt},
+            }
+            payload = (json.dumps(user_msg) + "\n").encode()
+            try:
+                self.proc.stdin.write(payload)
+                await self.proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError) as e:
+                print(f"[claude] stdin write failed: {e}")
+                self._event_queue = None
+                return {"is_error": True, "result": f"Claude stdin closed: {e}"}
+
+            final_event: dict | None = None
+            try:
+                while True:
+                    event = await asyncio.wait_for(
+                        queue.get(), timeout=CLAUDE_TIMEOUT_SECONDS
+                    )
+                    if event is None:
+                        return {
+                            "is_error": True,
+                            "result": "Claude session died mid-query.",
+                        }
+                    if on_tool_use is not None and event.get("type") == "assistant":
+                        msg = event.get("message", {}) or {}
+                        for block in msg.get("content") or []:
+                            if block.get("type") == "tool_use":
+                                try:
+                                    await on_tool_use(
+                                        block.get("name", ""),
+                                        block.get("input") or {},
+                                    )
+                                except Exception as e:
+                                    print(f"[claude] on_tool_use failed: {e}")
+                    if event.get("type") == "result":
+                        final_event = event
+                        break
+            except asyncio.TimeoutError:
+                print(f"[claude] query TIMEOUT after {CLAUDE_TIMEOUT_SECONDS}s")
+                final_event = {"is_error": True, "result": "The lookup timed out."}
+            finally:
+                self._event_queue = None
+            return final_event or {
+                "is_error": True,
+                "result": "No result event from claude.",
+            }
+
+
+claude_session = ClaudeSession()
 
 
 async def run_claude_query(
     query: str,
-    on_tool_use: Optional[Callable[[str], Awaitable[None]]] = None,
+    on_tool_use: Optional[Callable[[str, Any], Awaitable[None]]] = None,
 ) -> str:
-    """Send a query to Claude Code in headless mode; resume prior session if any."""
+    """Send a query to the persistent Claude Code session."""
     if not query.strip():
         return "Empty query."
 
-    session_id = _load_claude_session_id()
-    event = await _stream_claude(query, session_id, on_tool_use)
-
-    # If resuming failed (e.g. stale session id), retry without resume.
-    if event.get("is_error") and session_id:
-        print("[claude] retry without --resume after error")
-        event = await _stream_claude(query, None, on_tool_use)
-
-    new_session = event.get("session_id")
-    if new_session:
-        _save_claude_session_id(new_session)
+    event = await claude_session.query(query, on_tool_use)
 
     if event.get("is_error"):
         return f"Claude lookup failed: {event.get('result') or 'unknown error'}"
@@ -290,7 +437,14 @@ LOG_EVENT_TYPES = [
 ]
 SHOW_TIMING_MATH = False
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await claude_session.start()
+    yield
+    await claude_session._kill()
+
+
+app = FastAPI(lifespan=lifespan)
 
 if not OPENAI_API_KEY:
     raise ValueError('Missing the OpenAI API key. Please set it in the .env file.')
@@ -514,11 +668,19 @@ async def handle_media_stream(websocket: WebSocket):
                 last_progress_ts = 0.0
                 last_progress_phrase: str | None = None
 
-                async def speak_progress(tool_name: str) -> None:
+                async def speak_progress(tool_name: str, tool_input: Any) -> None:
                     nonlocal last_progress_ts, last_progress_phrase
-                    phrase = _progress_phrase_for_tool(tool_name)
+                    # Throttle BEFORE the Haiku call so rapid-fire tool calls
+                    # don't all spawn API requests.
+                    now = time.monotonic()
+                    if now - last_progress_ts < 5.0:
+                        return
+                    phrase = await _summarize_tool_use_for_speech(tool_name, tool_input)
+                    if not phrase:
+                        phrase = _static_phrase_for_tool(tool_name)
                     if not phrase:
                         return
+                    # Re-check after the await — another tool may have narrated.
                     now = time.monotonic()
                     if now - last_progress_ts < 5.0:
                         return
@@ -533,11 +695,50 @@ async def handle_media_stream(websocket: WebSocket):
                         "type": "response.create",
                         "response": {
                             "instructions": f"Say exactly, with no preamble: \"{phrase}\"",
-                            "modalities": ["audio"],
+                            "output_modalities": ["audio"],
                         },
                     }))
 
-                result = await run_claude_query(arguments.get("query", ""), speak_progress)
+                async def keepalive_filler() -> None:
+                    """Speak a generic 'still working' phrase if no tool-driven
+                    narration has fired for a while."""
+                    fillers = [
+                        "Still working on it.",
+                        "One moment, almost there.",
+                        "Hang tight.",
+                        "Still digging.",
+                    ]
+                    await asyncio.sleep(15.0)
+                    while True:
+                        now = time.monotonic()
+                        gap_since_last = now - last_progress_ts
+                        if gap_since_last < 12.0:
+                            await asyncio.sleep(12.0 - gap_since_last)
+                            continue
+                        if openai_ws.state.name != "OPEN":
+                            return
+                        phrase = random.choice(fillers)
+                        nonlocal_set_progress(now, phrase)
+                        print(f"[progress:filler] {phrase}")
+                        await openai_ws.send(json.dumps({
+                            "type": "response.create",
+                            "response": {
+                                "instructions": f"Say exactly, with no preamble: \"{phrase}\"",
+                                "output_modalities": ["audio"],
+                            },
+                        }))
+                        await asyncio.sleep(12.0)
+
+                def nonlocal_set_progress(ts: float, phrase: str) -> None:
+                    nonlocal last_progress_ts, last_progress_phrase
+                    last_progress_ts = ts
+                    last_progress_phrase = phrase
+
+                keepalive_task = asyncio.create_task(keepalive_filler())
+                try:
+                    result = await run_claude_query(arguments.get("query", ""), speak_progress)
+                finally:
+                    keepalive_task.cancel()
             else:
                 result = f"Unknown tool: {name}"
 
