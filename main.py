@@ -1,9 +1,11 @@
 import os
 import json
+import time
 import base64
 import random
 import asyncio
 import shutil
+from typing import Awaitable, Callable, Optional
 import websockets
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -148,7 +150,34 @@ def _log_claude_event(event: dict) -> None:
         print(f"[claude:event] {et}")
 
 
-async def _stream_claude(query: str, session_id: str | None) -> dict:
+def _progress_phrase_for_tool(name: str) -> str | None:
+    """Map a claude tool name to a short status phrase to speak to the caller,
+    or None if this tool shouldn't be narrated (internal/meta tools)."""
+    n = name.lower()
+    if "toolsearch" in n.replace("_", ""):
+        return None
+    if "gmail" in n or "mail" in n:
+        if "send" in n:
+            return "Sending the email."
+        if "draft" in n:
+            return "Drafting that email."
+        if "get" in n or "content" in n or "read" in n:
+            return "Reading that message."
+        if "search" in n or "list" in n:
+            return "Searching your inbox."
+        return "Working on your email."
+    if "event" in n or "calendar" in n:
+        if any(w in n for w in ("create", "update", "modify", "delete", "move")):
+            return "Updating your calendar."
+        return "Checking your calendar."
+    return None
+
+
+async def _stream_claude(
+    query: str,
+    session_id: str | None,
+    on_tool_use: Optional[Callable[[str], Awaitable[None]]] = None,
+) -> dict:
     """Run claude -p in stream-json mode, log each event, return the final result event."""
     cmd = [
         CLAUDE_BIN, "-p",
@@ -184,6 +213,14 @@ async def _stream_claude(query: str, session_id: str | None) -> dict:
                 print(f"[claude:stdout-raw] {line[:300].decode(errors='replace')}")
                 continue
             _log_claude_event(event)
+            if on_tool_use is not None and event.get("type") == "assistant":
+                msg = event.get("message", {}) or {}
+                for block in msg.get("content") or []:
+                    if block.get("type") == "tool_use":
+                        try:
+                            await on_tool_use(block.get("name", ""))
+                        except Exception as e:
+                            print(f"[claude] on_tool_use failed: {e}")
             if event.get("type") == "result":
                 final_event = event
 
@@ -216,18 +253,21 @@ async def _stream_claude(query: str, session_id: str | None) -> dict:
     return final_event
 
 
-async def run_claude_query(query: str) -> str:
+async def run_claude_query(
+    query: str,
+    on_tool_use: Optional[Callable[[str], Awaitable[None]]] = None,
+) -> str:
     """Send a query to Claude Code in headless mode; resume prior session if any."""
     if not query.strip():
         return "Empty query."
 
     session_id = _load_claude_session_id()
-    event = await _stream_claude(query, session_id)
+    event = await _stream_claude(query, session_id, on_tool_use)
 
     # If resuming failed (e.g. stale session id), retry without resume.
     if event.get("is_error") and session_id:
         print("[claude] retry without --resume after error")
-        event = await _stream_claude(query, None)
+        event = await _stream_claude(query, None, on_tool_use)
 
     new_session = event.get("session_id")
     if new_session:
@@ -471,7 +511,33 @@ async def handle_media_stream(websocket: WebSocket):
                 arguments = {}
 
             if name == "ask_claude":
-                result = await run_claude_query(arguments.get("query", ""))
+                last_progress_ts = 0.0
+                last_progress_phrase: str | None = None
+
+                async def speak_progress(tool_name: str) -> None:
+                    nonlocal last_progress_ts, last_progress_phrase
+                    phrase = _progress_phrase_for_tool(tool_name)
+                    if not phrase:
+                        return
+                    now = time.monotonic()
+                    if now - last_progress_ts < 5.0:
+                        return
+                    if phrase == last_progress_phrase and now - last_progress_ts < 15.0:
+                        return
+                    if openai_ws.state.name != "OPEN":
+                        return
+                    last_progress_ts = now
+                    last_progress_phrase = phrase
+                    print(f"[progress] {phrase}")
+                    await openai_ws.send(json.dumps({
+                        "type": "response.create",
+                        "response": {
+                            "instructions": f"Say exactly, with no preamble: \"{phrase}\"",
+                            "modalities": ["audio"],
+                        },
+                    }))
+
+                result = await run_claude_query(arguments.get("query", ""), speak_progress)
             else:
                 result = f"Unknown tool: {name}"
 
