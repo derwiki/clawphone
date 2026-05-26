@@ -1,134 +1,177 @@
-# DialAiFriend - AI Voice Assistant
+# DialAiFriend - A Phone Frontend for Your Personal Claude Code Agent
 
-A phone-based AI voice assistant that provides concise, technical conversations over a phone call. Built with Twilio Voice, OpenAI Realtime API, and Python.
+A voice assistant you call on the phone. The other end of the line is **your own
+Claude Code agent**, with your MCP servers (Gmail, Google Calendar, etc.) loaded
+and ready. Twilio carries the audio, OpenAI's Realtime API handles the
+conversational speech, and Claude Code does the actual work against your
+personal data.
 
-**Based on the original project:** [Speech Assistant with Twilio Voice and the OpenAI Realtime API](https://github.com/twilio-labs/speech-assistant-openai-realtime-api-python) by Twilio Labs.
+The Realtime model is the voice UI. Claude Code is the brain.
 
-## Features
+## What you can ask it
 
-**Agent Mode** - A concise, highly-technical voice assistant that's direct, structured, and solution-oriented
+Anything you'd normally pull out your phone for. The whole point is hands-free
+access to your inbox and calendar while driving, walking, cooking, or just
+not wanting to look at a screen.
 
-**Smart Silence Detection**
-- Detects when the caller goes quiet for 15 seconds
-- Follows up with clarifying questions or proposes next steps
-- Won't interrupt itself when speaking
+- "How many emails have I exchanged with Landon in the last 6 months?"
+- "What's on my calendar for tomorrow?"
+- "Ask Claude to draft an email to Sarah about pushing our 3pm to Thursday."
+- "Did Roger reply about the offer yet?"
+- "Find the last email from my landlord."
+- "Block out Friday afternoon for focus time."
+- "Read me the latest thread with the design team."
+- "When's my next meeting with the design team?"
 
-**Phone-Based Interaction**
-- Simple phone call interface - no apps or screens needed
-- Real-time voice conversations with low latency
-- Works with any phone number through Twilio
-- Randomly selects from 10 available OpenAI voices per call
+You can prefix a request with **"ask Claude"**, **"have Claude check"**, or
+**"tell Claude to..."** to force the delegation, but usually you don't need to
+— the Realtime model defaults to handing anything personal-data-shaped to
+Claude on its own.
 
-## How It Works
+A real call log from today: *"Ask Claude, how many emails have I exchanged with
+Landon in the last six months?"* came back with *"47 messages with
+landon@kbadvisors.com since November 26, 2025."* That's the shape of query
+this excels at.
 
-This application uses Python, [Twilio Voice](https://www.twilio.com/docs/voice) and [Media Streams](https://www.twilio.com/docs/voice/media-streams), and [OpenAI's Realtime API](https://platform.openai.com/docs/) to create an AI voice assistant accessible via phone call.
+## Architecture
 
-The application opens websockets with the OpenAI Realtime API and Twilio, and sends voice audio from one to the other to enable a two-way conversation.
+```
+  caller's phone
+       │
+       ▼
+     Twilio Voice  ──── Media Streams (mu-law 8kHz) ────┐
+                                                        ▼
+                                              FastAPI (main.py)
+                                                ▲          │
+                                                │          │ websocket
+                                                │          ▼
+                                       ask_claude     OpenAI Realtime API
+                                                │
+                                                ▼
+                              persistent `claude -p` subprocess
+                                                │
+                                                ▼
+                                MCP servers: Gmail, Calendar, ...
+```
 
-See [here](https://www.twilio.com/en-us/blog/voice-ai-assistant-openai-realtime-api-python) for a tutorial overview of the underlying code.
+The Realtime model has exactly one tool: `ask_claude(query)`. When it calls
+that tool, the FastAPI server pipes the query into a long-lived Claude Code
+subprocess and streams the answer back. The Realtime model then speaks the
+answer over the phone.
 
-This application uses the following Twilio products in conjunction with OpenAI's Realtime API:
-- Voice (and TwiML, Media Streams)
-- Phone Numbers
+### Persistent Claude subprocess
 
+The server holds a **single persistent Claude Code subprocess** for the
+lifetime of the FastAPI process. It's spawned at startup with:
+
+```
+claude -p --input-format stream-json --output-format stream-json --verbose \
+       --permission-mode bypassPermissions
+```
+
+Queries are fed turn-by-turn over stdin, results streamed back over stdout.
+The pid is written to `/tmp/dialaifriend-claude.pid` and the session id is
+persisted to `/tmp/dialaifriend-claude-session-id` so a restart can
+`--resume`. If the subprocess dies mid-call it auto-respawns on the next
+query. See the `ClaudeSession` class in `main.py` (around line 231).
+
+This keeps MCP servers warm and shaves ~1–2 seconds off every turn versus
+spawning a fresh subprocess each time.
+
+### In-call progress narration
+
+Claude tool calls can take several seconds. While one is in flight, a small
+Haiku model summarizes each MCP tool invocation into a brief spoken status
+update — "Searching for emails from Roger.", "Checking your calendar for
+tomorrow." — so the caller doesn't sit in silence.
+
+### Per-number allowlist
+
+This is a single-user personal assistant, not a multi-tenant product.
+`ALLOWED_PHONE_NUMBERS` in `main.py` is the allowlist; any other caller gets
+a polite rejection and a hangup.
+
+### "Deploy yourself" hot reload
+
+If you say **"deploy yourself"** during a call, the server cleanly exits at
+the end of the turn. The `make server` supervisor loop pulls latest from
+`origin/main` and respawns, so an in-call code word is enough to deploy a
+new version.
 
 ## Prerequisites
 
-To use the app, you will need:
+- **Python 3.9+** and the **[uv](https://github.com/astral-sh/uv)** package
+  manager.
+- **A Twilio account** with a Voice-capable phone number. Sign up
+  [here](https://www.twilio.com/try-twilio).
+- **An OpenAI API key** with Realtime API access.
+- **An Anthropic API key** (`ANTHROPIC_API_KEY`) — used by the Haiku
+  progress narrator.
+- **The `claude` CLI**, installed, authenticated, and configured with the
+  MCP servers you want exposed (Gmail, Google Calendar, etc.). See the
+  [Claude Code docs](https://docs.claude.com/en/docs/claude-code/overview)
+  and the [MCP setup guide](https://docs.claude.com/en/docs/claude-code/mcp).
+- **ngrok** (or another tunnel) so Twilio can reach your local server.
 
-- **Python 3.9+** We used `3.9.13` for development; download from [here](https://www.python.org/downloads/).
-- **uv package manager** - Fast Python package installer. Install from [here](https://github.com/astral-sh/uv).
-- **A Twilio account.** You can sign up for a free trial [here](https://www.twilio.com/try-twilio).
-- **A Twilio number with _Voice_ capabilities.** [Here are instructions](https://help.twilio.com/articles/223135247-How-to-Search-for-and-Buy-a-Twilio-Phone-Number-from-Console) to purchase a phone number.
-- **An OpenAI account and an OpenAI API Key.** You can sign up [here](https://platform.openai.com/).
-  - **OpenAI Realtime API access.**
+## Local setup
 
-## Local Setup
+1. **Open an ngrok tunnel** to port 5050:
 
-There are 4 required steps and 1 optional step to get the app up-and-running locally for development and testing:
-1. Run ngrok or another tunneling solution to expose your local server to the internet for testing. Download ngrok [here](https://ngrok.com/).
-2. (optional) Create and use a virtual environment
-3. Install the packages
-4. Twilio setup
-5. Update the .env file
+   ```
+   ngrok http 5050
+   ```
 
-### Open an ngrok tunnel
-When developing & testing locally, you'll need to open a tunnel to forward requests to your local development server. These instructions use ngrok.
+   Copy the `https://...ngrok.app` URL.
 
-Open a Terminal and run:
-```
-ngrok http 5050
-```
-Once the tunnel has been opened, copy the `Forwarding` URL. It will look something like: `https://[your-ngrok-subdomain].ngrok.app`. You will
-need this when configuring your Twilio number setup.
+2. **Install dependencies:**
 
-Note that the `ngrok` command above forwards to a development server running on port `5050`, which is the default port configured in this application. If
-you override the `PORT` defined in `main.py`, you will need to update the `ngrok` command accordingly.
+   ```
+   uv sync
+   ```
 
-Keep in mind that each time you run the `ngrok http` command, a new URL will be created, and you'll need to update it everywhere it is referenced below.
+3. **Configure Twilio.** In the [Twilio Console](https://console.twilio.com/),
+   go to **Phone Numbers → Manage → Active Numbers**, pick your number, and
+   under **A call comes in** set the webhook to
+   `https://<your-ngrok-subdomain>.ngrok.app/incoming-call`.
 
-### (Optional) Create and use a virtual environment
+4. **Add your number to the allowlist.** Edit `ALLOWED_PHONE_NUMBERS` in
+   `main.py` to include the phone(s) you'll be calling from.
 
-uv automatically manages virtual environments for you. If you want to create a specific virtual environment, you can run:
+5. **Set up `.env`:**
 
-```
-uv venv
-source .venv/bin/activate
-```
+   ```
+   cp .env.example .env
+   ```
 
-Or simply use uv commands directly without activating - uv will handle the virtual environment automatically.
-
-### Install required packages
-
-In the terminal (with the virtual environment, if you set it up) run:
-```
-uv sync
-```
-
-### Twilio setup
-
-#### Point a Phone Number to your ngrok URL
-In the [Twilio Console](https://console.twilio.com/), go to **Phone Numbers** > **Manage** > **Active Numbers** and click on the additional phone number you purchased for this app in the **Prerequisites**.
-
-In your Phone Number configuration settings, update the first **A call comes in** dropdown to **Webhook**, and paste your ngrok forwarding URL (referenced above), followed by `/incoming-call`. For example, `https://[your-ngrok-subdomain].ngrok.app/incoming-call`. Then, click **Save configuration**.
-
-### Update the .env file
-
-Create a `.env` file, or copy the `.env.example` file to `.env`:
-
-```
-cp .env.example .env
-```
-
-In the .env file, update the `OPENAI_API_KEY` to your OpenAI API key from the **Prerequisites**.
+   Fill in `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`.
 
 ## Run the app
-Once ngrok is running, dependencies are installed, Twilio is configured properly, and the `.env` is set up, run the dev server with the following command:
+
+```
+make server
+```
+
+This runs `main.py` in a supervisor loop that `git pull`s from `origin/main`
+and restarts on exit — required for the in-call "deploy yourself" hot
+reload. For one-shot local dev you can also just run:
+
 ```
 uv run python main.py
 ```
 
-Or use the included server script:
-```
-./server.sh
-```
+Then call your Twilio number. The assistant greets you briefly and asks what
+you're working on.
 
-## Test the app
-With the development server running, call the phone number you purchased in the **Prerequisites**. The assistant will greet you and ask what you're working on.
+## Interrupt handling
 
-## Special Features
-
-### Smart Silence Detection
-- Detects when the caller goes quiet for 15 seconds
-- Follows up with concise clarifying questions or proposes next actionable steps
-- Won't interrupt itself when speaking
-- Continuously monitors throughout the entire conversation
-
-### Interrupt handling/AI preemption
-When the user speaks and OpenAI sends `input_audio_buffer.speech_started`, the code will clear the Twilio Media Streams buffer and send OpenAI `conversation.item.truncate`.
-
-Depending on your application's needs, you may want to use the [`input_audio_buffer.speech_stopped`](https://platform.openai.com/docs/api-reference/realtime-server-events/input-audio-buffer-speech-stopped) event, instead, or a combination of the two.
+When you start speaking, the Realtime API emits
+`input_audio_buffer.speech_started` and the server clears the Twilio Media
+Streams buffer and sends `conversation.item.truncate`, so the assistant
+stops talking immediately and listens.
 
 ## Credits
 
-This project is based on the excellent work by [Twilio Labs](https://github.com/twilio-labs) and their [Speech Assistant with Twilio Voice and the OpenAI Realtime API](https://github.com/twilio-labs/speech-assistant-openai-realtime-api-python) project.
+Originally forked from Twilio Labs' excellent
+[Speech Assistant with Twilio Voice and the OpenAI Realtime API](https://github.com/twilio-labs/speech-assistant-openai-realtime-api-python).
+Since then it's been rebuilt around Claude Code and MCP; the Twilio/OpenAI
+wiring at the bottom is the part that's still recognizable.
