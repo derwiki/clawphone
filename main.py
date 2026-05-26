@@ -372,12 +372,12 @@ async def initialize_session(openai_ws, voice=None):
             "output_modalities": ["audio", "text"],
             "audio": {
                 "input": {
-                    "format": {"type": "audio/pcmu"},
+                    "format": {"type": "g711_ulaw"},
                     "turn_detection": {"type": "server_vad"},
-                    "transcription": {"enabled": True}
+                    "transcription": {"model": "whisper-1"}
                 },
                 "output": {
-                    "format": {"type": "audio/pcmu"},
+                    "format": {"type": "g711_ulaw"},
                     "voice": voice
                 }
             },
