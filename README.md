@@ -44,22 +44,39 @@ https://github.com/user-attachments/assets/3394c5e3-3946-4ea4-a35d-320346b4057f
 ## Architecture
 
 ```
-  caller's phone
-       │
-       ▼
-     Twilio Voice  ──── Media Streams (mu-law 8kHz) ────┐
-                                                        ▼
-                                              FastAPI (main.py)
-                                                ▲          │
-                                                │          │ websocket
-                                                │          ▼
-                                       ask_claude     OpenAI Realtime API
-                                                │
-                                                ▼
-                              persistent `claude -p` subprocess
-                                                │
-                                                ▼
-                                MCP servers: Gmail, Calendar, ...
+  ┌──────────────┐
+  │ caller phone │
+  └──────┬───────┘
+         │ PSTN
+         ▼
+  ┌──────────────┐  WebSocket           ┌──────────────────────────────────────────────────┐
+  │    Twilio    │  mu-law 8 kHz audio  │               main.py  (FastAPI)                 │
+  │    Voice     │◄────────────────────►│                                                  │
+  └──────────────┘                      │  ┌───────────────────────────────────────────┐   │
+                                        │  │         OpenAI Realtime API               │   │
+  ┌──────────────┐  WebSocket           │  │         GPT-4o-realtime · voice           │   │
+  │    OpenAI    │◄────────────────────►│  │                                           │   │
+  │    Realtime  │                      │  │  one tool:  ask_claude(query)             │   │
+  └──────────────┘                      │  └───────────────────────┬───────────────────┘   │
+                                        │                          │                        │
+                                        │                          ▼                        │
+                                        │  ┌───────────────────────────────────────────┐   │
+                                        │  │         ClaudeSession                     │   │
+                                        │  │         claude -p  --model sonnet-4-6     │   │
+                                        │  │         persistent subprocess             │   │
+                                        │  └───────────────────────┬───────────────────┘   │
+                                        │                          │ MCP tool calls         │
+                                        │                          ▼                        │
+                                        │  ┌───────────────────────────────────────────┐   │
+                                        │  │         MCP servers                       │   │
+                                        │  │         Gmail  ·  Google Calendar  ·  …   │   │
+                                        │  └───────────────────────────────────────────┘   │
+                                        │                                                  │
+                                        │  ┌───────────────────────────────────────────┐   │
+                                        │  │  Haiku (Anthropic API)                    │   │
+                                        │  │  narrates tool progress during long calls  │   │
+                                        │  └───────────────────────────────────────────┘   │
+                                        └──────────────────────────────────────────────────┘
 ```
 
 The Realtime model has exactly one tool: `ask_claude(query)`. When it calls
