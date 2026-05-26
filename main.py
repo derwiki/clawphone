@@ -252,6 +252,7 @@ class ClaudeSession:
         for use_resume in attempts:
             cmd = [
                 CLAUDE_BIN, "-p",
+                "--model", "claude-sonnet-4-6",
                 "--input-format", "stream-json",
                 "--output-format", "stream-json",
                 "--verbose",
