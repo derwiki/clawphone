@@ -697,6 +697,7 @@ async def handle_media_stream(websocket: WebSocket):
                         "response": {
                             "instructions": f"Say exactly, with no preamble: \"{phrase}\"",
                             "output_modalities": ["audio"],
+                            "tool_choice": "none",
                         },
                     }))
 
@@ -726,6 +727,7 @@ async def handle_media_stream(websocket: WebSocket):
                             "response": {
                                 "instructions": f"Say exactly, with no preamble: \"{phrase}\"",
                                 "output_modalities": ["audio"],
+                                "tool_choice": "none",
                             },
                         }))
                         await asyncio.sleep(12.0)
