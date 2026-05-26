@@ -369,15 +369,15 @@ async def initialize_session(openai_ws, voice=None):
         "session": {
             "type": "realtime",
             "model": "gpt-realtime",
-            "output_modalities": ["audio", "text"],
+            "output_modalities": ["audio"],
             "audio": {
                 "input": {
-                    "format": {"type": "g711_ulaw"},
+                    "format": {"type": "audio/pcmu"},
                     "turn_detection": {"type": "server_vad"},
                     "transcription": {"model": "whisper-1"}
                 },
                 "output": {
-                    "format": {"type": "g711_ulaw"},
+                    "format": {"type": "audio/pcmu"},
                     "voice": voice
                 }
             },
