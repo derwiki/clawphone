@@ -600,6 +600,14 @@ async def handle_media_stream(websocket: WebSocket):
 
                         await send_mark(websocket, stream_sid)
 
+                    if (response.get('type') == 'error' and
+                            response.get('error', {}).get('code') == 'session_expired'):
+                        print("[openai] session_expired — closing call")
+                        await websocket.send_json({"event": "clear", "streamSid": stream_sid})
+                        await openai_ws.close()
+                        await websocket.close()
+                        return
+
                     # Handle speech events
                     if response.get('type') == 'input_audio_buffer.speech_started':
                         print("Speech started detected.")
