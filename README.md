@@ -1,4 +1,4 @@
-# DialAiFriend - A Phone Frontend for Your Personal Claude Code Agent
+# ClawPhone — A Phone Frontend for Your Personal Claude Code Agent
 
 A voice assistant you call on the phone. The other end of the line is **your own
 Claude Code agent**, with your MCP servers (Gmail, Google Calendar, etc.) loaded
