@@ -95,16 +95,72 @@ def _save_claude_session_id(session_id: str) -> None:
         print(f"Could not persist Claude session id: {e}")
 
 
-async def _invoke_claude(query: str, session_id: str | None) -> tuple[int, bytes, bytes]:
+def _log_claude_event(event: dict) -> None:
+    """Render one stream-json event as a concise one-liner."""
+    et = event.get("type")
+    if et == "system":
+        sub = event.get("subtype", "")
+        model = event.get("model", "")
+        tools = event.get("tools") or []
+        mcps = [s.get("name") for s in (event.get("mcp_servers") or [])]
+        extras = []
+        if model:
+            extras.append(f"model={model}")
+        if mcps:
+            extras.append(f"mcp={mcps}")
+        if tools:
+            extras.append(f"tools={len(tools)}")
+        print(f"[claude:system/{sub}] {' '.join(extras)}")
+    elif et == "assistant":
+        msg = event.get("message", {}) or {}
+        for block in msg.get("content") or []:
+            btype = block.get("type")
+            if btype == "text":
+                text = (block.get("text") or "").strip().replace("\n", " ")
+                if text:
+                    print(f"[claude:asst] {text[:400]}")
+            elif btype == "tool_use":
+                name = block.get("name", "?")
+                inp = json.dumps(block.get("input") or {}, separators=(",", ":"))
+                print(f"[claude:tool→] {name}({inp[:300]})")
+            elif btype == "thinking":
+                thought = (block.get("thinking") or "").strip().replace("\n", " ")
+                if thought:
+                    print(f"[claude:think] {thought[:300]}")
+    elif et == "user":
+        msg = event.get("message", {}) or {}
+        for block in msg.get("content") or []:
+            if block.get("type") == "tool_result":
+                content = block.get("content")
+                if isinstance(content, list):
+                    content = " ".join(
+                        (b.get("text") or "") for b in content if isinstance(b, dict)
+                    )
+                preview = str(content or "").replace("\n", " ")[:300]
+                is_err = " ERR" if block.get("is_error") else ""
+                print(f"[claude:tool←{is_err}] {preview}")
+    elif et == "result":
+        cost = event.get("total_cost_usd", 0) or 0
+        dur = event.get("duration_ms", 0) or 0
+        turns = event.get("num_turns", 0) or 0
+        print(f"[claude:done] turns={turns} dur={dur}ms cost=${cost:.4f}")
+    else:
+        print(f"[claude:event] {et}")
+
+
+async def _stream_claude(query: str, session_id: str | None) -> dict:
+    """Run claude -p in stream-json mode, log each event, return the final result event."""
     cmd = [
         CLAUDE_BIN, "-p",
-        "--output-format", "json",
+        "--output-format", "stream-json",
+        "--verbose",
         "--permission-mode", "bypassPermissions",
     ]
     if session_id:
         cmd += ["--resume", session_id]
     cmd.append(query)
     print(f"[claude] invoking: {cmd}")
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.DEVNULL,
@@ -112,40 +168,52 @@ async def _invoke_claude(query: str, session_id: str | None) -> tuple[int, bytes
         stderr=asyncio.subprocess.PIPE,
         cwd=CLAUDE_CWD,
     )
+
+    final_event: dict | None = None
+
+    async def read_stdout() -> None:
+        nonlocal final_event
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"[claude:stdout-raw] {line[:300].decode(errors='replace')}")
+                continue
+            _log_claude_event(event)
+            if event.get("type") == "result":
+                final_event = event
+
+    async def read_stderr() -> None:
+        assert proc.stderr is not None
+        async for raw in proc.stderr:
+            text = raw.rstrip().decode(errors="replace")
+            if text:
+                print(f"[claude:stderr] {text[:400]}")
+
     try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=CLAUDE_TIMEOUT_SECONDS
+        await asyncio.wait_for(
+            asyncio.gather(read_stdout(), read_stderr(), proc.wait()),
+            timeout=CLAUDE_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
         print(f"[claude] TIMEOUT after {CLAUDE_TIMEOUT_SECONDS}s")
-        return -1, b"", b"timeout"
-    print(f"[claude] returncode={proc.returncode} stdout={len(stdout)}B stderr={len(stderr)}B")
-    if stderr:
-        print(f"[claude] --- full stderr ---\n{stderr.decode(errors='replace')}\n[claude] --- end stderr ---")
-    if proc.returncode != 0:
-        print(f"[claude] --- full stdout ---\n{stdout.decode(errors='replace')}\n[claude] --- end stdout ---")
-    return proc.returncode, stdout, stderr
+        return {"is_error": True, "result": "The lookup timed out.", "session_id": session_id}
 
+    print(f"[claude] returncode={proc.returncode}")
 
-def _summarize_claude_error(stderr_bytes: bytes, stdout_bytes: bytes) -> str:
-    """Pull a meaningful one-liner out of Claude's noisy stderr/stdout for the caller."""
-    text = (stderr_bytes + b"\n" + stdout_bytes).decode(errors="replace")
-    # graceful-fs and similar bundled noise: drop lines that look like minified source.
-    lines = [
-        ln.strip() for ln in text.splitlines()
-        if ln.strip()
-        and not ln.lstrip().startswith("GFS4")
-        and "graceful-fs" not in ln
-        and "console.error" not in ln
-        and not (len(ln) > 200 and ln.count("{") + ln.count(";") > 5)
-    ]
-    for ln in lines:
-        low = ln.lower()
-        if "error" in low or "fatal" in low or "exception" in low or "enoent" in low:
-            return ln[:400]
-    return (lines[-1] if lines else "unknown error")[:400]
+    if final_event is None:
+        return {
+            "is_error": True,
+            "result": f"No result event from claude (rc={proc.returncode})",
+            "session_id": session_id,
+        }
+    return final_event
 
 
 async def run_claude_query(query: str) -> str:
@@ -154,30 +222,21 @@ async def run_claude_query(query: str) -> str:
         return "Empty query."
 
     session_id = _load_claude_session_id()
-    returncode, stdout, stderr = await _invoke_claude(query, session_id)
+    event = await _stream_claude(query, session_id)
 
     # If resuming failed (e.g. stale session id), retry without resume.
-    if returncode != 0 and session_id:
-        print(f"Claude --resume failed (rc={returncode}); retrying without resume")
-        returncode, stdout, stderr = await _invoke_claude(query, None)
+    if event.get("is_error") and session_id:
+        print("[claude] retry without --resume after error")
+        event = await _stream_claude(query, None)
 
-    if returncode == -1:
-        return "The lookup timed out."
-    if returncode != 0:
-        err = _summarize_claude_error(stderr, stdout)
-        print(f"[claude] failure summary returned to model: {err!r}")
-        return f"Claude lookup failed: {err}"
-
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
-        return stdout.decode(errors="replace")[:500].strip() or "No response from Claude."
-
-    new_session = data.get("session_id")
+    new_session = event.get("session_id")
     if new_session:
         _save_claude_session_id(new_session)
 
-    result = data.get("result")
+    if event.get("is_error"):
+        return f"Claude lookup failed: {event.get('result') or 'unknown error'}"
+
+    result = event.get("result")
     if isinstance(result, str) and result.strip():
         return result.strip()
     return "Claude returned no text."
