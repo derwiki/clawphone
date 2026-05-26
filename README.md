@@ -1,5 +1,7 @@
 # ClawPhone — A Phone Frontend for Your Personal Claude Code Agent
 
+<img width="1024" height="506" alt="image" src="https://github.com/user-attachments/assets/208d64fe-de54-472a-a33b-48052e173410" />
+
 A voice assistant you call on the phone. The other end of the line is **your own
 Claude Code agent**, with your MCP servers (Gmail, Google Calendar, etc.) loaded
 and ready. Twilio carries the audio, OpenAI's Realtime API handles the
