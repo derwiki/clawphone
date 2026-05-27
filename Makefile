@@ -1,4 +1,7 @@
-.PHONY: server
+.PHONY: server test
+
+test:
+	uv run --extra dev pytest
 
 server:
 	@trap 'exit 0' INT TERM; \
