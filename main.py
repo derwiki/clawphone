@@ -81,15 +81,18 @@ TOOLS = [
 VOICE = 'alloy'
 VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
 
-RESTART_CODE_WORD = "deploy yourself"
+RESTART_PHRASES = [
+    ["deploy", "yourself"],
+    ["bravo", "zulu"],
+]
 RESTART_PENDING = False
 
 
 def _matches_restart_code_word(text: str) -> bool:
     if not text:
         return False
-    normalized = "".join(c.lower() if c.isalnum() or c.isspace() else " " for c in text)
-    return RESTART_CODE_WORD in " ".join(normalized.split())
+    words = set("".join(c.lower() if c.isalnum() else " " for c in text).split())
+    return any(all(w in words for w in phrase) for phrase in RESTART_PHRASES)
 
 
 def _load_claude_session_id() -> str | None:
@@ -835,7 +838,7 @@ async def send_initial_conversation_item(openai_ws):
             "content": [
                 {
                     "type": "input_text",
-                    "text": "Say exactly: 'I'm ready.' Nothing else."
+                    "text": "Say exactly: 'Ready to go.' Nothing else."
                 }
             ]
         }
