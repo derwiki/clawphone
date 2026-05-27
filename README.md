@@ -2,46 +2,42 @@
 
 <img width="1024" height="506" alt="image" src="https://github.com/user-attachments/assets/208d64fe-de54-472a-a33b-48052e173410" />
 
-A voice assistant you call on the phone. The other end of the line is **your own
-Claude Code agent**, with your MCP servers (Gmail, Google Calendar, etc.) loaded
-and ready. Twilio carries the audio, OpenAI's Realtime API handles the
-conversational speech, and Claude Code does the actual work against your
-personal data.
+Call a phone number. Talk to your Claude Code agent. It has your Gmail, Google
+Calendar, and any other MCP servers you've configured, live on the call.
 
-The Realtime model is the voice UI. Claude Code is the brain.
+Twilio carries the audio. OpenAI's Realtime API handles the conversation.
+Claude Code does the actual work. The phone is just the interface.
 
-## What you can ask it
+One more thing: **say "deploy yourself" mid-call and it ships itself** — the
+server exits, `make server` pulls from `origin/main`, and it respawns. No
+terminal required.
 
-Anything you'd normally pull out your phone for. The whole point is hands-free
-access to your inbox and calendar while driving, walking, cooking, or just
-not wanting to look at a screen.
+## What you can ask
 
 - "How many emails have I exchanged with Landon in the last 6 months?"
 - "What's on my calendar for tomorrow?"
-- "Ask Claude to draft an email to Sarah about pushing our 3pm to Thursday."
+- "Draft an email to Sarah about pushing our 3pm to Thursday."
 - "Did Roger reply about the offer yet?"
-- "Find the last email from my landlord."
 - "Block out Friday afternoon for focus time."
 - "Read me the latest thread with the design team."
-- "When's my next meeting with the design team?"
 
-You can prefix a request with **"ask Claude"**, **"have Claude check"**, or
-**"tell Claude to..."** to force the delegation, but usually you don't need to
-— the Realtime model defaults to handing anything personal-data-shaped to
-Claude on its own.
+Prefix anything with **"ask Claude"** or **"have Claude check"** to force
+delegation, but usually you don't need to — the Realtime model hands off
+anything personal-data-shaped automatically.
 
-A real call log from today: *"Ask Claude, how many emails have I exchanged with
-Landon in the last six months?"* came back with *"47 messages with
-landon@gmail.com since November 26, 2025."* That's the shape of query
-this excels at.
+A real example: *"Ask Claude, how many emails have I exchanged with Landon in
+the last six months?"* → *"47 messages with landon@gmail.com since November
+26, 2025."*
 
-### Google Calendar Example
+## Demo
+
+**Calendar lookup:**
+
 https://github.com/user-attachments/assets/3394c5e3-3946-4ea4-a35d-320346b4057f
 
+**Shipping itself mid-call:**
 
-### Self-shipping Example
 https://github.com/user-attachments/assets/4ac3d1c4-ba62-449b-8906-50c91bed05e3
-
 
 ## Architecture
 
@@ -83,64 +79,66 @@ https://github.com/user-attachments/assets/4ac3d1c4-ba62-449b-8906-50c91bed05e3
 
 The Realtime model has exactly one tool: `ask_claude(query)`. When it calls
 that tool, the FastAPI server pipes the query into a long-lived Claude Code
-subprocess and streams the answer back. The Realtime model then speaks the
-answer over the phone.
+subprocess and streams the answer back. The Realtime model speaks the answer
+over the phone.
 
 ### Persistent Claude subprocess
 
-The server holds a **single persistent Claude Code subprocess** for the
-lifetime of the FastAPI process. It's spawned at startup with:
+The server holds a single persistent Claude Code subprocess for the lifetime
+of the FastAPI process, spawned at startup with:
 
 ```
-claude -p --input-format stream-json --output-format stream-json --verbose \
+claude -p --model claude-sonnet-4-6 \
+       --input-format stream-json --output-format stream-json --verbose \
        --permission-mode bypassPermissions
 ```
 
 Queries are fed turn-by-turn over stdin, results streamed back over stdout.
-The pid is written to `/tmp/dialaifriend-claude.pid` and the session id is
-persisted to `/tmp/dialaifriend-claude-session-id` so a restart can
-`--resume`. If the subprocess dies mid-call it auto-respawns on the next
-query. See the `ClaudeSession` class in `main.py` (around line 231).
+The session id is persisted to `/tmp/dialaifriend-claude-session-id` so a
+restart can `--resume`. If the subprocess dies mid-call it auto-respawns on
+the next query.
 
 This keeps MCP servers warm and shaves ~1–2 seconds off every turn versus
 spawning a fresh subprocess each time.
 
 ### In-call progress narration
 
-Claude tool calls can take several seconds. While one is in flight, a small
-Haiku model summarizes each MCP tool invocation into a brief spoken status
-update — "Searching for emails from Roger.", "Checking your calendar for
-tomorrow." — so the caller doesn't sit in silence.
+Claude tool calls can take several seconds. While one is in flight, a Haiku
+model summarizes each MCP tool invocation into a brief spoken status update —
+"Searching for emails from Roger.", "Checking your calendar for tomorrow." —
+so the caller doesn't sit in silence.
 
 ### Per-number allowlist
 
-This is a single-user personal assistant, not a multi-tenant product.
-`ALLOWED_PHONE_NUMBERS` in `main.py` is the allowlist; any other caller gets
-a polite rejection and a hangup.
+This is a single-user personal assistant, not a multi-tenant product. Set
+`ALLOWED_PHONE_NUMBERS` in `.env` (comma-separated E.164 format); any other
+caller gets a polite rejection and a hangup.
 
-### "Deploy yourself" hot reload
+### Self-deploying via voice
 
-If you say **"deploy yourself"** during a call, the server cleanly exits at
-the end of the turn. The `make server` supervisor loop pulls latest from
-`origin/main` and respawns, so an in-call code word is enough to deploy a
-new version.
+Say **"deploy yourself"** (or **"bravo zulu"** if you're somewhere noisy)
+during a call and the server announces the restart, exits cleanly, and comes
+back up on the latest `origin/main`. `make server` runs a supervisor loop
+that handles the pull and respawn automatically. It's the only deployment
+method you need once it's running.
+
+### Webhook security
+
+Every Twilio webhook is validated against `TWILIO_AUTH_TOKEN` before
+processing. Requests with an invalid or missing signature are rejected with
+403. This closes the obvious hole where anyone who knows your ngrok URL could
+forge a call.
 
 ## Prerequisites
 
-- **Python 3.9+** and the **[uv](https://github.com/astral-sh/uv)** package
-  manager.
-- **A Twilio account** with a Voice-capable phone number. Sign up
-  [here](https://www.twilio.com/try-twilio).
-- **An OpenAI API key** with Realtime API access.
-- **An Anthropic API key** (`ANTHROPIC_API_KEY`) — used by the Haiku
-  progress narrator.
-- **The `claude` CLI**, installed, authenticated, and configured with the
-  MCP servers you want exposed (Gmail, Google Calendar, etc.). See the
-  [Claude Code docs](https://docs.claude.com/en/docs/claude-code/overview)
-  and the [MCP setup guide](https://docs.claude.com/en/docs/claude-code/mcp).
-- **ngrok** (or another tunnel) so Twilio can reach your local server.
+- **Python 3.9+** and **[uv](https://github.com/astral-sh/uv)**
+- **A Twilio account** with a Voice-capable phone number ([sign up](https://www.twilio.com/try-twilio))
+- **An OpenAI API key** with Realtime API access
+- **An Anthropic API key** — used by the Haiku progress narrator
+- **The `claude` CLI**, installed, authenticated, and configured with your MCP servers. See the [Claude Code docs](https://docs.claude.com/en/docs/claude-code/overview) and the [MCP setup guide](https://docs.claude.com/en/docs/claude-code/mcp).
+- **ngrok** (or another tunnel) so Twilio can reach your local server
 
-## Local setup
+## Setup
 
 1. **Open an ngrok tunnel** to port 5050:
 
@@ -148,57 +146,46 @@ new version.
    ngrok http 5050
    ```
 
-   Copy the `https://...ngrok.app` URL.
-
 2. **Install dependencies:**
 
    ```
    uv sync
    ```
 
-3. **Configure Twilio.** In the [Twilio Console](https://console.twilio.com/),
-   go to **Phone Numbers → Manage → Active Numbers**, pick your number, and
-   under **A call comes in** set the webhook to
-   `https://<your-ngrok-subdomain>.ngrok.app/incoming-call`.
-
-4. **Add your number to the allowlist.** Edit `ALLOWED_PHONE_NUMBERS` in
-   `main.py` to include the phone(s) you'll be calling from.
-
-5. **Set up `.env`:**
+3. **Configure `.env`:**
 
    ```
    cp .env.example .env
    ```
 
-   Fill in `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`.
+   Fill in all four values: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+   `TWILIO_AUTH_TOKEN`, and `ALLOWED_PHONE_NUMBERS` (your number in E.164
+   format, e.g. `+15551234567`).
 
-## Run the app
+4. **Configure Twilio.** In the [Twilio Console](https://console.twilio.com/),
+   go to **Phone Numbers → Manage → Active Numbers**, pick your number, and
+   set the **A call comes in** webhook to:
+   ```
+   https://<your-ngrok-subdomain>.ngrok.app/incoming-call
+   ```
+
+## Run
 
 ```
 make server
 ```
 
-This runs `main.py` in a supervisor loop that `git pull`s from `origin/main`
-and restarts on exit — required for the in-call "deploy yourself" hot
-reload. For one-shot local dev you can also just run:
+This runs the server in a supervisor loop that `git pull`s from `origin/main`
+and restarts on exit — required for the in-call self-deploy. For one-shot
+local dev:
 
 ```
 uv run python main.py
 ```
 
-Then call your Twilio number. The assistant greets you briefly and asks what
-you're working on.
-
-## Interrupt handling
-
-When you start speaking, the Realtime API emits
-`input_audio_buffer.speech_started` and the server clears the Twilio Media
-Streams buffer and sends `conversation.item.truncate`, so the assistant
-stops talking immediately and listens.
-
 ## Credits
 
-Originally forked from Twilio Labs' excellent
+Originally forked from Twilio Labs'
 [Speech Assistant with Twilio Voice and the OpenAI Realtime API](https://github.com/twilio-labs/speech-assistant-openai-realtime-api-python).
-Since then it's been rebuilt around Claude Code and MCP; the Twilio/OpenAI
-wiring at the bottom is the part that's still recognizable.
+Rebuilt around Claude Code and MCP; the Twilio/OpenAI wiring is the part
+that's still recognizable.
