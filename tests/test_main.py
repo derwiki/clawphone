@@ -1,12 +1,35 @@
 import os
 import sys
+from urllib.parse import urlparse
 
 import pytest
-from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
+os.environ.setdefault("TWILIO_AUTH_TOKEN", "test-twilio-auth-token")
+
 import main
+
+
+class FakeUrl:
+    def __init__(self, raw_url: str):
+        self.raw_url = raw_url
+        self.hostname = urlparse(raw_url).hostname
+
+    def __str__(self):
+        return self.raw_url
+
+
+class FakeRequest:
+    def __init__(self, raw_url: str, form_data: dict, headers: dict):
+        self.url = FakeUrl(raw_url)
+        self._form_data = form_data
+        self.headers = headers
+        self.client = "testclient"
+
+    async def form(self):
+        return self._form_data
 
 
 @pytest.mark.parametrize(
@@ -65,30 +88,55 @@ async def test_run_claude_query_empty_short_circuits():
     assert await main.run_claude_query("   ") == "Empty query."
 
 
-@pytest.fixture
-def no_twilio_signature(monkeypatch):
-    """Disable Twilio webhook signature validation so route tests can
-    exercise the phone-number allowlist without a real signed request."""
-    monkeypatch.setattr(main, "_twilio_validator", None)
-
-
-def _twiml(form_from: str) -> str:
-    client = TestClient(main.app)
-    resp = client.post("/incoming-call", data={"From": form_from})
+async def _twiml(form_from: str) -> str:
+    form_data = {"From": form_from}
+    url = main._twilio_public_url("http://testserver/incoming-call")
+    signature = main._twilio_validator.compute_signature(url, form_data)
+    resp = await main.handle_incoming_call(
+        FakeRequest(
+            "http://testserver/incoming-call",
+            form_data,
+            {"X-Twilio-Signature": signature},
+        )
+    )
     assert resp.status_code == 200
-    return resp.text
+    return resp.body.decode()
 
 
-def test_incoming_call_rejects_unknown_number(no_twilio_signature):
-    body = _twiml("+15555550100")
+async def test_incoming_call_rejects_invalid_signature():
+    resp = await main.handle_incoming_call(
+        FakeRequest(
+            "http://testserver/incoming-call",
+            {"From": "+15555551212"},
+            {"X-Twilio-Signature": "invalid"},
+        )
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_incoming_call_rejects_unknown_number():
+    body = await _twiml("+15555550100")
     assert "<Hangup" in body
     assert "<Say" in body
     assert "<Stream" not in body
 
 
-def test_incoming_call_accepts_allowed_number(no_twilio_signature):
-    body = _twiml("+15555551212")
+async def test_incoming_call_accepts_allowed_number():
+    body = await _twiml("+15555551212")
     assert "<Stream" in body
     assert "wss://" in body
     assert "/media-stream" in body
     assert "<Hangup" not in body
+
+
+def test_media_stream_signature_validation_uses_wss_public_url():
+    raw_url = "ws://testserver/media-stream?voice=alloy"
+    params = {"voice": "alloy"}
+    signature = main._twilio_validator.compute_signature(
+        "wss://testserver/media-stream?voice=alloy",
+        params,
+    )
+
+    assert main._valid_twilio_signature(raw_url, params, signature) is True
+    assert main._valid_twilio_signature(raw_url, params, "invalid") is False

@@ -24,11 +24,11 @@ TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 PORT = int(os.getenv('PORT', 5050))
 TEMPERATURE = float(os.getenv('TEMPERATURE', 0.8))
 
-_twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else None
-if _twilio_validator:
-    print("[security] Twilio webhook signature validation enabled")
-else:
-    print("[warn] TWILIO_AUTH_TOKEN not set — webhook signature validation disabled")
+if not TWILIO_AUTH_TOKEN:
+    raise ValueError('Missing the Twilio auth token. Please set TWILIO_AUTH_TOKEN in the .env file.')
+
+_twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN)
+print("[security] Twilio request signature validation enabled")
 
 SYSTEM_MESSAGE = (
     "You are a concise, highly-technical voice assistant similar to a senior developer assistant. "
@@ -81,18 +81,41 @@ TOOLS = [
 VOICE = 'alloy'
 VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
 
-RESTART_PHRASES = [
-    ["deploy", "yourself"],
-    ["bravo", "zulu"],
-]
+def _load_phrases(env_var: str, default: str, label: str) -> list[list[str]]:
+    raw = os.getenv(env_var, default)
+    phrases = [p.strip().lower().split() for p in raw.split(",") if p.strip()]
+    print(f"[{label}] loaded {len(phrases)} phrase(s): {[' '.join(p) for p in phrases]}")
+    return phrases
+
+RESTART_PHRASES = _load_phrases("RESTART_PHRASES", "deploy yourself,bravo zulu", "restart")
+HANGUP_PHRASES  = _load_phrases("HANGUP_PHRASES",  "hang up on yourself",        "hangup")
 RESTART_PENDING = False
 
 
-def _matches_restart_code_word(text: str) -> bool:
+def _matches_phrases(text: str, phrases: list[list[str]]) -> bool:
     if not text:
         return False
     words = set("".join(c.lower() if c.isalnum() else " " for c in text).split())
-    return any(all(w in words for w in phrase) for phrase in RESTART_PHRASES)
+    return any(all(w in words for w in phrase) for phrase in phrases)
+
+def _matches_restart_code_word(text: str) -> bool:
+    return _matches_phrases(text, RESTART_PHRASES)
+
+def _matches_hangup_phrase(text: str) -> bool:
+    return _matches_phrases(text, HANGUP_PHRASES)
+
+
+def _twilio_public_url(raw_url: str) -> str:
+    """Reconstruct the public URL Twilio signed before ngrok/local proxying."""
+    if raw_url.startswith("http://"):
+        return "https://" + raw_url[len("http://"):]
+    if raw_url.startswith("ws://"):
+        return "wss://" + raw_url[len("ws://"):]
+    return raw_url
+
+
+def _valid_twilio_signature(raw_url: str, params: dict, signature: str) -> bool:
+    return _twilio_validator.validate(_twilio_public_url(raw_url), params, signature)
 
 
 def _load_claude_session_id() -> str | None:
@@ -476,15 +499,13 @@ async def handle_incoming_call(request: Request):
 
     form_data = await request.form()
 
-    if _twilio_validator:
-        # Reconstruct the URL as Twilio sees it. Ngrok terminates TLS so the
-        # ASGI scope has scheme=http even though Twilio called https://.
-        url = str(request.url).replace("http://", "https://", 1)
-        signature = request.headers.get("X-Twilio-Signature", "")
-        if not _twilio_validator.validate(url, dict(form_data), signature):
-            print(f"[security] Rejected request with invalid Twilio signature from {request.client}")
-            return HTMLResponse(content="Forbidden", status_code=403)
-        print(f"[security] Twilio signature valid for incoming call from {form_data.get('From', 'unknown')}")
+    # Reconstruct the URL as Twilio sees it. Ngrok terminates TLS so the
+    # ASGI scope has scheme=http even though Twilio called https://.
+    signature = request.headers.get("X-Twilio-Signature", "")
+    if not _valid_twilio_signature(str(request.url), dict(form_data), signature):
+        print(f"[security] Rejected request with invalid Twilio signature from {request.client}")
+        return HTMLResponse(content="Forbidden", status_code=403)
+    print(f"[security] Twilio signature valid for incoming call from {form_data.get('From', 'unknown')}")
 
     # Get caller's phone number from Twilio request
     caller_number = form_data.get('From', '')
@@ -510,6 +531,12 @@ async def handle_incoming_call(request: Request):
 @app.websocket("/media-stream")
 async def handle_media_stream(websocket: WebSocket):
     """Handle WebSocket connections between Twilio and OpenAI."""
+    signature = websocket.headers.get("x-twilio-signature", "")
+    if not _valid_twilio_signature(str(websocket.url), dict(websocket.query_params), signature):
+        print(f"[security] Rejected media stream with invalid Twilio signature from {websocket.client}")
+        await websocket.close(code=1008)
+        return
+
     print("Client connected")
     await websocket.accept()
 
@@ -563,9 +590,11 @@ async def handle_media_stream(websocket: WebSocket):
                 if openai_ws.state.name == 'OPEN':
                     await openai_ws.close()
 
+        hangup_pending = False
+
         async def send_to_twilio():
             """Receive events from the OpenAI Realtime API, send audio back to Twilio."""
-            nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio, assistant_text_buffer, user_transcript_buffer
+            nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio, assistant_text_buffer, user_transcript_buffer, hangup_pending
             try:
                 async for openai_message in openai_ws:
                     response = json.loads(openai_message)
@@ -600,6 +629,10 @@ async def handle_media_stream(websocket: WebSocket):
                             RESTART_PENDING = True
                             print("Restart code word detected; announcing shutdown")
                             await trigger_restart_announcement(openai_ws)
+                        elif _matches_hangup_phrase(final_transcript):
+                            hangup_pending = True
+                            print("Hang-up phrase detected; ending call")
+                            await trigger_hangup_announcement(openai_ws)
                         user_transcript_buffer = ""
 
                     if response.get('type') == 'response.output_audio.delta' and 'delta' in response:
@@ -639,7 +672,11 @@ async def handle_media_stream(websocket: WebSocket):
                     
                     elif response.get('type') == 'response.done':
                         if RESTART_PENDING:
-                            # Let the "system restarting" audio drain to Twilio, then drop the call
+                            await asyncio.sleep(2)
+                            await openai_ws.close()
+                            await websocket.close()
+                            return
+                        if hangup_pending:
                             await asyncio.sleep(2)
                             await openai_ws.close()
                             await websocket.close()
@@ -821,6 +858,25 @@ async def trigger_restart_announcement(openai_ws):
                 {
                     "type": "input_text",
                     "text": "Reply with exactly: 'System restarting.' Do not say anything else.",
+                }
+            ],
+        },
+    }
+    await openai_ws.send(json.dumps(item))
+    await openai_ws.send(json.dumps({"type": "response.create"}))
+
+async def trigger_hangup_announcement(openai_ws):
+    """Have the model say goodbye before hanging up."""
+    await openai_ws.send(json.dumps({"type": "response.cancel"}))
+    item = {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "Reply with exactly: 'Goodbye.' Do not say anything else.",
                 }
             ],
         },
