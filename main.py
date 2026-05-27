@@ -13,14 +13,20 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.websockets import WebSocketDisconnect
 from twilio.twiml.voice_response import VoiceResponse, Connect, Say, Stream
+from twilio.request_validator import RequestValidator
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # Configuration
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 PORT = int(os.getenv('PORT', 5050))
 TEMPERATURE = float(os.getenv('TEMPERATURE', 0.8))
+
+_twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else None
+if not _twilio_validator:
+    print("[warn] TWILIO_AUTH_TOKEN not set — webhook signature validation disabled")
 
 SYSTEM_MESSAGE = (
     "You are a concise, highly-technical voice assistant similar to a senior developer assistant. "
@@ -463,8 +469,18 @@ async def handle_incoming_call(request: Request):
     """Handle incoming call and return TwiML response to connect to Media Stream."""
     response = VoiceResponse()
 
-    # Get caller's phone number from Twilio request
     form_data = await request.form()
+
+    if _twilio_validator:
+        # Reconstruct the URL as Twilio sees it. Ngrok terminates TLS so the
+        # ASGI scope has scheme=http even though Twilio called https://.
+        url = str(request.url).replace("http://", "https://", 1)
+        signature = request.headers.get("X-Twilio-Signature", "")
+        if not _twilio_validator.validate(url, dict(form_data), signature):
+            print(f"[security] Rejected request with invalid Twilio signature from {request.client}")
+            return HTMLResponse(content="Forbidden", status_code=403)
+
+    # Get caller's phone number from Twilio request
     caller_number = form_data.get('From', '')
 
     # Restrict to allowed phone numbers only
