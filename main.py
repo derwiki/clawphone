@@ -489,8 +489,10 @@ async def index_page():
     return {"message": "Twilio Media Stream Server is running!"}
 
 ALLOWED_PHONE_NUMBERS = [
-    "+15555551212",  # 555-555-1212
+    n.strip() for n in os.getenv("ALLOWED_PHONE_NUMBERS", "").split(",") if n.strip()
 ]
+if not ALLOWED_PHONE_NUMBERS:
+    raise ValueError("ALLOWED_PHONE_NUMBERS not set in .env — add a comma-separated list of E.164 numbers")
 
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def handle_incoming_call(request: Request):

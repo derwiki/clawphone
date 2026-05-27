@@ -1,4 +1,4 @@
-# ClawPhone — A Phone Frontend for Your Personal Claude Code Agent
+# ClawPhone — Your Agent on Speed Dial
 
 <img width="1024" height="506" alt="image" src="https://github.com/user-attachments/assets/208d64fe-de54-472a-a33b-48052e173410" />
 
