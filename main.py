@@ -25,7 +25,9 @@ PORT = int(os.getenv('PORT', 5050))
 TEMPERATURE = float(os.getenv('TEMPERATURE', 0.8))
 
 _twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else None
-if not _twilio_validator:
+if _twilio_validator:
+    print("[security] Twilio webhook signature validation enabled")
+else:
     print("[warn] TWILIO_AUTH_TOKEN not set — webhook signature validation disabled")
 
 SYSTEM_MESSAGE = (
@@ -479,6 +481,7 @@ async def handle_incoming_call(request: Request):
         if not _twilio_validator.validate(url, dict(form_data), signature):
             print(f"[security] Rejected request with invalid Twilio signature from {request.client}")
             return HTMLResponse(content="Forbidden", status_code=403)
+        print(f"[security] Twilio signature valid for incoming call from {form_data.get('From', 'unknown')}")
 
     # Get caller's phone number from Twilio request
     caller_number = form_data.get('From', '')
