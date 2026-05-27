@@ -35,10 +35,12 @@ Landon in the last six months?"* came back with *"47 messages with
 landon@gmail.com since November 26, 2025."* That's the shape of query
 this excels at.
 
-
-
+### Google Calendar Example
 https://github.com/user-attachments/assets/3394c5e3-3946-4ea4-a35d-320346b4057f
 
+
+### Self-shipping Example
+https://github.com/user-attachments/assets/4ac3d1c4-ba62-449b-8906-50c91bed05e3
 
 
 ## Architecture
