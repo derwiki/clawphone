@@ -88,7 +88,7 @@ def _load_phrases(env_var: str, default: str, label: str) -> list[list[str]]:
     return phrases
 
 RESTART_PHRASES = _load_phrases("RESTART_PHRASES", "deploy yourself,bravo zulu", "restart")
-HANGUP_PHRASES  = _load_phrases("HANGUP_PHRASES",  "hang up on yourself",        "hangup")
+HANGUP_PHRASES  = _load_phrases("HANGUP_PHRASES",  "hang up on yourself,hang yourself up,hotel uniform", "hangup")
 RESTART_PENDING = False
 
 

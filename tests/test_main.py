@@ -53,6 +53,26 @@ def test_matches_restart_code_word_variants(text, expected):
 
 
 @pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("hang up on yourself", True),
+        ("Please hang up on yourself now.", True),
+        ("hang yourself up", True),
+        ("Hang Yourself Up!", True),
+        ("hotel uniform", True),
+        ("Hotel Uniform, over.", True),
+        ("hang up", False),
+        ("hotel california", False),
+        ("just hotel", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_matches_hangup_phrase_variants(text, expected):
+    assert main._matches_hangup_phrase(text) is expected
+
+
+@pytest.mark.parametrize(
     "tool_name,expected",
     [
         ("ToolSearch", None),
