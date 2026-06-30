@@ -1,5 +1,11 @@
 # Project context for ask_claude invocations
 
+## Personal context
+
+Gitignored personal context files live in `context/`. At the start of each session,
+read all `.md` files in that directory — they contain Adam's personal preferences,
+communication templates, and standing instructions that should inform your responses.
+
 This Claude is invoked headlessly by `main.py` to answer questions the caller asks over the phone (via the `ask_claude` tool exposed to the OpenAI realtime model). Optimize for short, spoken answers — the result is read aloud, so prefer plain prose over markdown tables, bullet lists, or code blocks unless the caller specifically asks.
 
 ## MCP servers available
