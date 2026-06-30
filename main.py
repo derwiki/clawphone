@@ -8,6 +8,7 @@ import shutil
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable, Optional
 import anthropic
+import httpx
 import websockets
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -37,6 +38,7 @@ SYSTEM_MESSAGE = (
     "You have an `ask_claude` tool that delegates to a Claude Code agent on the same machine, "
     "which has MCP servers loaded (calendar, email, files, etc.). Use it whenever the caller's "
     "question requires looking up their personal data or running real actions.\n"
+    "You also have a `print_to_receipt_printer` tool. Use it when the caller asks to print something.\n"
     "HARD RULE: if the caller says any variant of 'ask Claude', 'have Claude', 'check with Claude', "
     "'tell Claude', or otherwise explicitly directs you to use Claude, you MUST call `ask_claude` "
     "with the rest of their request as the `query`. Do not answer from your own knowledge in that "
@@ -75,8 +77,27 @@ TOOLS = [
             },
             "required": ["query"],
         },
-    }
+    },
+    {
+        "type": "function",
+        "name": "print_to_receipt_printer",
+        "description": (
+            "Print text to the receipt printer. Use when the caller asks to print something."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "The text to print on the receipt printer.",
+                }
+            },
+            "required": ["text"],
+        },
+    },
 ]
+
+RECEIPT_PRINTER_URL = os.getenv("RECEIPT_PRINTER_URL", "http://localhost:8000/print")
 
 VOICE = 'alloy'
 VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
@@ -811,6 +832,17 @@ async def handle_media_stream(websocket: WebSocket):
                     result = await run_claude_query(arguments.get("query", ""), speak_progress)
                 finally:
                     keepalive_task.cancel()
+            elif name == "print_to_receipt_printer":
+                text = arguments.get("text", "")
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.post(
+                            RECEIPT_PRINTER_URL,
+                            data={"raw_text": text},
+                        )
+                    result = "Printed." if resp.is_success else f"Printer returned {resp.status_code}."
+                except Exception as e:
+                    result = f"Couldn't reach the receipt printer: {e}"
             else:
                 result = f"Unknown tool: {name}"
 
